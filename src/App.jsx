@@ -11,63 +11,114 @@ const SB = createClient(
   "sb_publishable_8_2sGbwdbgQmptBsh3iUoQ_Dem-WaKv"
 );
 
-// ── FMP via serverless proxy (avoids CORS / key exposure) ────────────────────
-const PROXY = "/api/fmp";
-
-async function fmp(path, params = {}) {
-  const qs = new URLSearchParams({ path, ...params }).toString();
-  const r = await fetch(`${PROXY}?${qs}`);
+// ── Yahoo Finance via serverless proxy ───────────────────────────────────────
+async function yahooQuote(symbol) {
+  const r = await fetch(`/api/yahoo?symbol=${symbol}`);
+  return r.json();
+}
+async function yahooSummary(symbol) {
+  const r = await fetch(`/api/yahoo?symbol=${symbol}&endpoint=quoteSummary`);
+  return r.json();
+}
+async function yahooHistory(symbol, days = 120) {
+  const to = Math.floor(Date.now() / 1000);
+  const from = to - days * 86400;
+  const r = await fetch(`/api/yahoo?symbol=${symbol}&endpoint=history&from=${from}&to=${to}`);
   return r.json();
 }
 
 async function fetchQuote(symbol) {
-  const d = await fmp(`quote/${symbol}`);
-  return Array.isArray(d) ? d[0] : null;
-}
-async function fetchProfile(symbol) {
-  const d = await fmp(`profile/${symbol}`);
-  return Array.isArray(d) ? d[0] : null;
-}
-async function fetchKeyMetrics(symbol) {
-  const d = await fmp(`key-metrics-ttm/${symbol}`);
-  return Array.isArray(d) ? d[0] : null;
-}
-async function fetchGrowth(symbol) {
-  const d = await fmp(`financial-growth/${symbol}`, { limit: 1 });
-  return Array.isArray(d) ? d[0] : null;
-}
-async function fetchHistoricalPrices(symbol, days = 90) {
-  const d = await fmp(`historical-price-full/${symbol}`, { timeseries: days });
-  return d.historical || [];
+  const data = await yahooQuote(symbol);
+  const meta = data?.chart?.result?.[0]?.meta;
+  if (!meta) return null;
+  return {
+    price: meta.regularMarketPrice,
+    previousClose: meta.chartPreviousClose || meta.regularMarketPreviousClose,
+    change: meta.regularMarketPrice && meta.regularMarketPreviousClose
+      ? ((meta.regularMarketPrice - meta.regularMarketPreviousClose) / meta.regularMarketPreviousClose) * 100
+      : 0,
+  };
 }
 
 async function fetchFull(symbol) {
-  const [quote, profile, metrics, growth] = await Promise.all([
-    fetchQuote(symbol), fetchProfile(symbol), fetchKeyMetrics(symbol), fetchGrowth(symbol)
+  const [quoteData, summaryData] = await Promise.all([
+    yahooQuote(symbol),
+    yahooSummary(symbol),
   ]);
-  if (!quote) return null;
-  const epsGrowth = growth?.epsgrowth || growth?.epsGrowth || 0;
-  const peRatio = quote.pe || null;
-  const peg = peRatio && epsGrowth ? peRatio / (epsGrowth * 100) : null;
-  const roic = (metrics?.roicTTM || 0) * 100;
-  const netDebtEbitda = metrics?.netDebtToEBITDATTM ?? null;
+
+  const meta = quoteData?.chart?.result?.[0]?.meta;
+  if (!meta) return null;
+
+  const price = meta.regularMarketPrice;
+  const prevClose = meta.regularMarketPreviousClose || meta.chartPreviousClose;
+  const change = price && prevClose ? ((price - prevClose) / prevClose) * 100 : 0;
+
+  const fin = summaryData?.quoteSummary?.result?.[0];
+  const fd = fin?.financialData || {};
+  const ks = fin?.defaultKeyStatistics || {};
+  const sd = fin?.summaryDetail || {};
+  const ap = fin?.assetProfile || {};
+
+  // Key metrics
+  const pe = sd.trailingPE?.raw || ks.trailingPE?.raw || null;
+  const forwardPE = sd.forwardPE?.raw || null;
+
+  // EPS growth: use analyst 5yr estimate if available, else YoY EPS
+  const epsGrowthRaw = ks.earningsQuarterlyGrowth?.raw
+    || fd.earningsGrowth?.raw
+    || fd.revenueGrowth?.raw
+    || 0;
+  const epsGrowthPct = epsGrowthRaw * 100;
+
+  const peg = pe && epsGrowthPct > 0 ? pe / epsGrowthPct : null;
+
+  const grossMargin = (fd.grossMargins?.raw || 0) * 100;
+  const roic = (fd.returnOnEquity?.raw || 0) * 100; // ROE as proxy; ROIC not directly in Yahoo free
+  const revenueGrowth = (fd.revenueGrowth?.raw || 0) * 100;
+
+  // Net Debt / EBITDA
+  const totalDebt = fd.totalDebt?.raw || 0;
+  const totalCash = fd.totalCash?.raw || 0;
+  const ebitda = fd.ebitda?.raw || 0;
+  const netDebt = totalDebt - totalCash;
+  const netDebtEbitda = ebitda > 0 ? netDebt / ebitda : null;
+
+  const marketCap = sd.marketCap?.raw || ks.enterpriseValue?.raw || null;
+  const name = fd.companyOfficers ? ap.longName || symbol : symbol;
+
   return {
     symbol: symbol.toUpperCase(),
-    name: profile?.companyName || quote.name || symbol,
-    price: quote.price,
-    change: quote.changesPercentage,
-    pe: peRatio,
+    name: ap.longName || ap.shortName || symbol,
+    price,
+    change,
+    pe,
+    forwardPE,
     peg,
-    epsGrowth: epsGrowth * 100,
-    revenueGrowth: (growth?.revenueGrowth || 0) * 100,
-    grossMargin: (metrics?.grossProfitMarginTTM || 0) * 100,
+    epsGrowth: epsGrowthPct,
+    revenueGrowth,
+    grossMargin,
     roic,
     netDebtEbitda,
-    marketCap: quote.marketCap,
-    sector: profile?.sector || "—",
-    logo: profile?.image || null,
-    currentEpsGrowth: epsGrowth,
+    marketCap,
+    sector: ap.sector || "—",
+    logo: `https://logo.clearbit.com/${ap.website?.replace(/https?:\/\//, "").split("/")[0]}`,
+    currentEpsGrowth: epsGrowthRaw,
   };
+}
+
+async function fetchHistoricalPrices(symbol, days = 120) {
+  const to = Math.floor(Date.now() / 1000);
+  const from = to - days * 86400;
+  const r = await fetch(`/api/yahoo?symbol=${symbol}&endpoint=history&from=${from}&to=${to}`);
+  const data = await r.json();
+  const result = data?.chart?.result?.[0];
+  if (!result) return [];
+  const timestamps = result.timestamp || [];
+  const closes = result.indicators?.quote?.[0]?.close || [];
+  return timestamps.map((ts, i) => ({
+    date: new Date(ts * 1000).toISOString().split("T")[0],
+    close: closes[i],
+  })).filter(d => d.close != null);
 }
 
 // ── Supabase ──────────────────────────────────────────────────────────────────
@@ -665,7 +716,11 @@ function PortfolioTab({ positions, setPositions }) {
   const refresh = async () => {
     setLoading(true);
     const out = {};
-    for (const p of positions) { const q = await fetchQuote(p.symbol); if (q) out[p.symbol] = q; }
+    for (const p of positions) {
+      const data = await yahooQuote(p.symbol);
+      const meta = data?.chart?.result?.[0]?.meta;
+      if (meta) out[p.symbol] = { price: meta.regularMarketPrice };
+    }
     setQuotes(out); setLoading(false);
   };
 
