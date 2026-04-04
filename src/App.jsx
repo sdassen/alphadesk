@@ -59,13 +59,13 @@ async function fetchFull(symbol) {
   const sd = fin?.summaryDetail || {};
   const ap = fin?.assetProfile || {};
 
-  // ── PEG: verfijnde multi-source berekening ───────────────────────────────
+  // ── PEG: consistent pairing of PE and growth ─────────────────────────────
   const trailingEps = ks.trailingEps?.raw || null;
   const forwardEps = ks.forwardEps?.raw || null;
   const forwardPE = sd.forwardPE?.raw || ks.forwardPE?.raw || null;
   const trailingPE = sd.trailingPE?.raw || ks.trailingPE?.raw || null;
 
-  // Forward EPS groei (1 jaar)
+  // Forward EPS growth (1yr analyst estimate)
   const forwardGrowth = trailingEps && forwardEps && trailingEps > 0
     ? (forwardEps - trailingEps) / Math.abs(trailingEps)
     : null;
@@ -75,39 +75,52 @@ async function fetchFull(symbol) {
   const qtrGrowth = ks.earningsQuarterlyGrowth?.raw || null;
   const revGrowth = fd.revenueGrowth?.raw || null;
 
-  // Kies beste groeivoet — cap extreme cyclical pieken
-  let epsGrowthRaw, pegSource, growthUsed;
+  // Key insight: trailing PE > 100 means earnings base is distorted (e.g. POWL had
+  // a bad year). In that case we MUST use forward PE + forward growth together.
+  // Mixing forward PE with TTM growth gives a wrong PEG.
+  const trailingDistorted = !trailingPE || trailingPE <= 0 || trailingPE > 100;
 
-  if (forwardGrowth !== null && forwardGrowth > 0 && forwardGrowth <= 1.0) {
+  let epsGrowthRaw, pegSource, usedPE;
+
+  if (trailingDistorted && forwardPE && forwardGrowth !== null && forwardGrowth > 0) {
+    // Distorted trailing: use forward PE + forward growth (paired consistently)
+    usedPE = forwardPE;
+    if (forwardGrowth <= 1.0) {
+      epsGrowthRaw = forwardGrowth;
+      pegSource = "fwd";
+    } else {
+      // >100% forward growth: normalize with sqrt to avoid absurdly low PEG
+      epsGrowthRaw = Math.sqrt(forwardGrowth);
+      pegSource = "fwd↓";
+    }
+  } else if (forwardGrowth !== null && forwardGrowth > 0 && forwardGrowth <= 1.0) {
+    // Clean trailing PE + moderate forward growth
+    usedPE = trailingPE;
     epsGrowthRaw = forwardGrowth;
     pegSource = "fwd";
-    growthUsed = "1yr forward";
   } else if (ttmGrowth !== null && ttmGrowth > 0 && ttmGrowth <= 2.0) {
+    // Fall back to TTM actuals
+    usedPE = trailingPE;
     epsGrowthRaw = ttmGrowth;
     pegSource = "ttm";
-    growthUsed = "TTM actuals";
   } else if (forwardGrowth !== null && forwardGrowth > 1.0) {
-    // Cyclical piek: √(forward) normaliseert de éénjarige explosie
+    // High forward growth with clean trailing PE
+    usedPE = trailingPE;
     epsGrowthRaw = Math.sqrt(forwardGrowth);
     pegSource = "fwd↓";
-    growthUsed = "forward (normalized)";
   } else if (qtrGrowth !== null && qtrGrowth > 0) {
+    usedPE = trailingPE;
     epsGrowthRaw = Math.min(qtrGrowth, 2.0);
     pegSource = "qtr";
-    growthUsed = "quarterly";
   } else {
+    usedPE = trailingPE || forwardPE;
     epsGrowthRaw = revGrowth || 0;
     pegSource = "rev";
-    growthUsed = "revenue (fallback)";
   }
 
   const epsGrowthPct = epsGrowthRaw * 100;
-
-  // Gebruik forward P/E als trailing P/E ontbreekt of >150 (distorted door laag basisjaar)
-  // Voor cyclicals: forward P/E is eerlijker dan trailing
-  const effectivePE = (trailingPE && trailingPE > 0 && trailingPE < 150) ? trailingPE : forwardPE;
-  const pegPE = (trailingPE && trailingPE > 0 && trailingPE < 150) ? trailingPE : forwardPE;
-  const peg = pegPE && epsGrowthPct > 0 ? pegPE / epsGrowthPct : null;
+  const effectivePE = usedPE || forwardPE;
+  const peg = effectivePE && epsGrowthPct > 0 ? effectivePE / epsGrowthPct : null;
 
   // ── Winstgevendheid & cashflow ────────────────────────────────────────────
   const grossMargin = (fd.grossMargins?.raw || 0) * 100;
@@ -872,13 +885,20 @@ function PortfolioTab({ positions, setPositions }) {
       };
     });
 
-    const prompt = `You are a rational investment analyst. Analyze this portfolio and give rebalancing advice.
+    const prompt = `You are a rational, long-term investment analyst. Your primary rule: DO NOT TRADE unless there is a compelling, data-driven reason. Over-trading destroys returns through taxes, spreads, and timing mistakes.
 
 PORTFOLIO (value $${totalValue.toFixed(0)}, return ${ret.toFixed(1)}%):
 ${portfolioData.map(p => `${p.symbol}: ${p.shares} shares, avg $${p.avgCost}, now $${p.currentPrice}, gain ${p.gainLossPct}%, weight ${p.portfolioWeight}%, fwdPE ${p.forwardPE}, PEG ${p.peg}, analyst upside ${p.analystUpside}%, rec ${p.analystRec}`).join('\n')}
 
+STRICT RULES — only recommend action if ALL conditions are met:
+- TRIM: position weight >20% AND (PEG >2.5 OR analyst upside <5%). Otherwise HOLD.
+- ADD: analyst upside >25% AND PEG <1.5 AND position weight <15%. Otherwise HOLD.
+- REBALANCE move: only suggest if the valuation gap between from/to is >40% on PEG basis.
+- Default to HOLD. A good investor does nothing most of the time.
+- Each trade costs ~€4 in DEGIRO fees — factor this into small positions.
+
 Return ONLY valid JSON, no other text:
-{"summary":"one sentence assessment","signals":[{"symbol":"X","signal":"TRIM or HOLD or ADD","reason":"brief reason","action":"specific action"}],"rebalance":[{"from":"X","to":"Y","rationale":"brief reason","urgency":"high or medium or low"}]}`;
+{"summary":"one sentence assessment","signals":[{"symbol":"X","signal":"TRIM or HOLD or ADD","reason":"brief data-driven reason","action":"specific action or null if HOLD"}],"rebalance":[{"from":"X","to":"Y","rationale":"brief reason","urgency":"high or medium or low"}]}`;
 
     try {
       const response = await fetch("/api/analyze", {
