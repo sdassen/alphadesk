@@ -60,32 +60,42 @@ async function fetchFull(symbol) {
   const ap = fin?.assetProfile || {};
 
   // ── EPS groei: meerdere bronnen, beste keuze ─────────────────────────────
-  // Bron 1: Forward EPS groei (forwardEps vs trailingEps) — meest relevant voor PEG
   const trailingEps = ks.trailingEps?.raw || null;
   const forwardEps = ks.forwardEps?.raw || null;
+
+  // Forward EPS groei (1jr) — betrouwbaar maar kan extreem zijn bij cyclicals
   const forwardGrowth = trailingEps && forwardEps && trailingEps > 0
     ? (forwardEps - trailingEps) / Math.abs(trailingEps)
     : null;
 
-  // Bron 2: TTM earnings growth (YoY actuals)
+  // TTM earnings growth (YoY actuals)
   const ttmGrowth = fd.earningsGrowth?.raw || null;
 
-  // Bron 3: Quarterly earnings growth
+  // Quarterly growth
   const qtrGrowth = ks.earningsQuarterlyGrowth?.raw || null;
 
-  // Bron 4: Revenue growth als fallback
+  // Revenue growth als fallback
   const revGrowth = fd.revenueGrowth?.raw || null;
 
-  // Prioriteit: forward > TTM > quarterly > revenue
+  // Kies beste bron — maar cap extreme waarden (>100% is niet representatief voor PEG)
+  // Bij cyclicals zoals MU is forward 1jr groei misleidend hoog
   let epsGrowthRaw, pegSource;
-  if (forwardGrowth !== null && forwardGrowth > -0.5 && forwardGrowth < 5) {
+
+  if (forwardGrowth !== null && forwardGrowth > 0 && forwardGrowth <= 1.0) {
+    // Forward groei ≤100%: betrouwbaar en representatief
     epsGrowthRaw = forwardGrowth;
     pegSource = "fwd";
-  } else if (ttmGrowth !== null) {
+  } else if (ttmGrowth !== null && ttmGrowth > 0 && ttmGrowth <= 2.0) {
+    // TTM groei ≤200%: gebruik actuele groei
     epsGrowthRaw = ttmGrowth;
     pegSource = "ttm";
-  } else if (qtrGrowth !== null) {
-    epsGrowthRaw = qtrGrowth;
+  } else if (forwardGrowth !== null && forwardGrowth > 1.0) {
+    // Forward groei >100% (cyclical piek): gebruik √(forward) als proxy voor normalisatie
+    // Dit geeft een conservatievere maar realistischere groeivoet
+    epsGrowthRaw = Math.sqrt(forwardGrowth);
+    pegSource = "fwd↓";
+  } else if (qtrGrowth !== null && qtrGrowth > 0) {
+    epsGrowthRaw = Math.min(qtrGrowth, 2.0);
     pegSource = "qtr";
   } else {
     epsGrowthRaw = revGrowth || 0;
@@ -94,7 +104,10 @@ async function fetchFull(symbol) {
 
   const epsGrowthPct = epsGrowthRaw * 100;
   const pe = sd.trailingPE?.raw || ks.trailingPE?.raw || null;
-  const peg = pe && epsGrowthPct > 0 ? pe / epsGrowthPct : null;
+  // Gebruik forward P/E als trailing P/E ontbreekt of >100 (distorted)
+  const forwardPE = sd.forwardPE?.raw || ks.forwardPE?.raw || null;
+  const effectivePE = (pe && pe < 150) ? pe : forwardPE;
+  const peg = effectivePE && epsGrowthPct > 0 ? effectivePE / epsGrowthPct : null;
 
   const grossMargin = (fd.grossMargins?.raw || 0) * 100;
   const roic = (fd.returnOnEquity?.raw || 0) * 100;
@@ -114,7 +127,7 @@ async function fetchFull(symbol) {
     name: ap.longName || ap.shortName || symbol,
     price,
     change,
-    pe,
+    pe: effectivePE,
     peg,
     pegSource,
     epsGrowth: epsGrowthPct,
