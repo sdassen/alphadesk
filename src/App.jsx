@@ -552,7 +552,7 @@ function ScannerTab({ onAddToShortlist, portfolioSymbols, shortlistSymbols, scan
 
   // Load universe from DB on mount
   useEffect(() => {
-    SB.from("scan_universe").select("symbol").order("symbol").then(({ data }) => {
+    SB.from("scan_universe").select("symbol").eq("active", true).order("symbol").then(({ data }) => {
       setUniverse((data || []).map(r => r.symbol));
     });
   }, []);
@@ -900,6 +900,203 @@ function PortfolioTab({ positions, setPositions }) {
   );
 }
 
+// ── Universum Tab ─────────────────────────────────────────────────────────────
+function UniversumTab() {
+  const [universe, setUniverse] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [enriching, setEnriching] = useState(false);
+  const [enrichProgress, setEnrichProgress] = useState("");
+  const [newSymbol, setNewSymbol] = useState("");
+  const [newSector, setNewSector] = useState("");
+  const [search, setSearch] = useState("");
+  const [collapsedSectors, setCollapsedSectors] = useState({});
+
+  const load = async () => {
+    setLoading(true);
+    const { data } = await SB.from("scan_universe")
+      .select("*")
+      .order("sector").order("symbol");
+    setUniverse(data || []);
+    setLoading(false);
+  };
+
+  useEffect(() => { load(); }, []);
+
+  // Enrich: haal naam + market cap + revenue op via Yahoo voor alle ontbrekende entries
+  const enrichAll = async () => {
+    const missing = universe.filter(u => !u.name || !u.market_cap);
+    if (!missing.length) return;
+    setEnriching(true);
+    for (const item of missing) {
+      setEnrichProgress(`${item.symbol}…`);
+      try {
+        const data = await yahooSummary(item.symbol);
+        const fin = data?.quoteSummary?.result?.[0];
+        const fd = fin?.financialData || {};
+        const sd = fin?.summaryDetail || {};
+        const ap = fin?.assetProfile || {};
+        const name = ap.longName || ap.shortName || null;
+        const market_cap = sd.marketCap?.raw || null;
+        const revenue = fd.totalRevenue?.raw || null;
+        if (name || market_cap) {
+          await SB.from("scan_universe").update({ name, market_cap, revenue }).eq("symbol", item.symbol);
+          setUniverse(p => p.map(u => u.symbol === item.symbol ? { ...u, name, market_cap, revenue } : u));
+        }
+      } catch (e) { /* skip */ }
+      await new Promise(r => setTimeout(r, 150)); // rate limit
+    }
+    setEnriching(false);
+    setEnrichProgress("");
+  };
+
+  const addTicker = async () => {
+    const sym = newSymbol.trim().toUpperCase();
+    if (!sym) return;
+    const sector = newSector.trim() || "Overig";
+    await SB.from("scan_universe").upsert({ symbol: sym, sector, active: true }, { onConflict: "symbol" });
+    setNewSymbol(""); setNewSector("");
+    await load();
+  };
+
+  const removeTicker = async (symbol) => {
+    await SB.from("scan_universe").delete().eq("symbol", symbol);
+    setUniverse(p => p.filter(u => u.symbol !== symbol));
+  };
+
+  const toggleActive = async (symbol, active) => {
+    await SB.from("scan_universe").update({ active: !active }).eq("symbol", symbol);
+    setUniverse(p => p.map(u => u.symbol === symbol ? { ...u, active: !active } : u));
+  };
+
+  const toggleSector = (sector) => {
+    setCollapsedSectors(p => ({ ...p, [sector]: !p[sector] }));
+  };
+
+  const fmt = {
+    cap: (v) => !v ? "—" : v >= 1e12 ? `$${(v/1e12).toFixed(1)}T` : v >= 1e9 ? `$${(v/1e9).toFixed(1)}B` : `$${(v/1e6).toFixed(0)}M`,
+  };
+
+  const filtered = universe.filter(u =>
+    u.symbol.includes(search.toUpperCase()) ||
+    (u.name || "").toLowerCase().includes(search.toLowerCase())
+  );
+
+  // Group by sector
+  const sectors = {};
+  for (const u of filtered) {
+    if (!sectors[u.sector]) sectors[u.sector] = [];
+    sectors[u.sector].push(u);
+  }
+
+  const activeCount = universe.filter(u => u.active !== false).length;
+  const enrichedCount = universe.filter(u => u.name).length;
+
+  return (
+    <div>
+      {/* Header controls */}
+      <div style={{ display: "flex", gap: 12, alignItems: "flex-start", marginBottom: 20, flexWrap: "wrap" }}>
+        <div style={{ flex: 1 }}>
+          <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Zoek op ticker of naam…"
+            style={{ width: "100%", maxWidth: 300, background: "#0a0a0a", border: "1px solid #1e1e1e", borderRadius: 8, color: "#d0d0d0", padding: "8px 13px", fontSize: 13, fontFamily: "monospace" }}/>
+        </div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap', alignItems: 'center" }}>
+          <span style={{ fontSize: 11, color: "#444", fontFamily: "monospace", alignSelf: "center" }}>
+            {activeCount}/{universe.length} actief · {enrichedCount} verrijkt
+          </span>
+          <button onClick={enrichAll} disabled={enriching}
+            style={{ background: "#0a0a0a", border: "1px solid #1e1e1e", borderRadius: 8, color: enriching ? "#333" : "#555", padding: "7px 13px", cursor: enriching ? "not-allowed" : "pointer", display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}>
+            {enriching ? <Spinner/> : <Icon name="refresh" size={13}/>}
+            {enriching ? enrichProgress : "Verrijk namen & omzet"}
+          </button>
+        </div>
+      </div>
+
+      {/* Add ticker */}
+      <div style={{ background: "#070707", border: "1px solid #1a1a1a", borderRadius: 10, padding: "14px 18px", marginBottom: 20, display: "flex", gap: 10, alignItems: "flex-end", flexWrap: "wrap" }}>
+        <div>
+          <div style={{ fontSize: 10, color: "#444", letterSpacing: 1, textTransform: "uppercase", marginBottom: 4 }}>Ticker</div>
+          <input value={newSymbol} onChange={e => setNewSymbol(e.target.value)} placeholder="AAPL"
+            onKeyDown={e => e.key === "Enter" && addTicker()}
+            style={{ width: 90, background: "#0d0d0d", border: "1px solid #222", borderRadius: 6, color: "#d0d0d0", padding: "7px 11px", fontSize: 13, fontFamily: "monospace" }}/>
+        </div>
+        <div>
+          <div style={{ fontSize: 10, color: "#444", letterSpacing: 1, textTransform: "uppercase", marginBottom: 4 }}>Sector</div>
+          <input value={newSector} onChange={e => setNewSector(e.target.value)} placeholder="bijv. Semiconductors"
+            onKeyDown={e => e.key === "Enter" && addTicker()}
+            style={{ width: 180, background: "#0d0d0d", border: "1px solid #222", borderRadius: 6, color: "#d0d0d0", padding: "7px 11px", fontSize: 13, fontFamily: "monospace" }}/>
+        </div>
+        <button onClick={addTicker}
+          style={{ background: "#00e5a0", border: "none", borderRadius: 8, color: "#000", padding: "7px 16px", fontWeight: 700, cursor: "pointer", display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}>
+          <Icon name="plus" size={13}/> Toevoegen
+        </button>
+      </div>
+
+      {loading ? (
+        <div style={{ display: "flex", alignItems: "center", gap: 10, color: "#333", fontFamily: "monospace", padding: "40px 0" }}><Spinner/> Laden…</div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          {Object.entries(sectors).sort().map(([sector, tickers]) => {
+            const collapsed = collapsedSectors[sector];
+            const sectorActive = tickers.filter(t => t.active !== false).length;
+            return (
+              <div key={sector} style={{ background: "#070707", border: "1px solid #141414", borderRadius: 10, overflow: "hidden" }}>
+                {/* Sector header */}
+                <div onClick={() => toggleSector(sector)}
+                  style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 18px", cursor: "pointer", userSelect: "none" }}
+                  onMouseEnter={e => e.currentTarget.style.background = "#0d0d0d"}
+                  onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                    <span style={{ fontFamily: "monospace", fontWeight: 700, fontSize: 13, color: "#e0e0e0" }}>{sector}</span>
+                    <span style={{ fontSize: 11, color: "#444", fontFamily: "monospace" }}>{sectorActive}/{tickers.length} actief</span>
+                  </div>
+                  <span style={{ color: "#333", fontSize: 12 }}>{collapsed ? "▶" : "▼"}</span>
+                </div>
+
+                {/* Ticker rows */}
+                {!collapsed && (
+                  <div>
+                    {/* Column header */}
+                    <div style={{ display: "grid", gridTemplateColumns: "80px 1fr 120px 120px 80px 60px", gap: 0, padding: "6px 18px", borderTop: "1px solid #111", borderBottom: "1px solid #111" }}>
+                      {["Ticker", "Naam", "Market Cap", "Omzet", "Actief", ""].map((h, i) => (
+                        <div key={i} style={{ fontSize: 9, color: "#333", fontWeight: 700, letterSpacing: 1.2, textTransform: "uppercase", fontFamily: "monospace", textAlign: i >= 4 ? "center" : "left" }}>{h}</div>
+                      ))}
+                    </div>
+                    {tickers.map(ticker => (
+                      <div key={ticker.symbol}
+                        style={{ display: "grid", gridTemplateColumns: "80px 1fr 120px 120px 80px 60px", alignItems: "center", padding: "9px 18px", borderBottom: "1px solid #0c0c0c", opacity: ticker.active === false ? 0.4 : 1, transition: "opacity 0.2s" }}
+                        onMouseEnter={e => e.currentTarget.style.background = "#0b0b0b"}
+                        onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
+                        <div style={{ fontFamily: "monospace", fontWeight: 700, fontSize: 13, color: "#fff" }}>{ticker.symbol}</div>
+                        <div style={{ fontSize: 12, color: "#888", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", paddingRight: 12 }}>{ticker.name || <span style={{ color: "#333" }}>—</span>}</div>
+                        <div style={{ fontFamily: "monospace", fontSize: 12, color: "#666" }}>{fmt.cap(ticker.market_cap)}</div>
+                        <div style={{ fontFamily: "monospace", fontSize: 12, color: "#666" }}>{fmt.cap(ticker.revenue)}</div>
+                        <div style={{ textAlign: "center" }}>
+                          <button onClick={() => toggleActive(ticker.symbol, ticker.active !== false)}
+                            style={{ background: ticker.active !== false ? "#00e5a022" : "#1a1a1a", border: `1px solid ${ticker.active !== false ? "#00e5a044" : "#222"}`, borderRadius: 5, color: ticker.active !== false ? "#00e5a0" : "#444", padding: "3px 8px", cursor: "pointer", fontSize: 10, fontFamily: "monospace" }}>
+                            {ticker.active !== false ? "aan" : "uit"}
+                          </button>
+                        </div>
+                        <div style={{ textAlign: "center" }}>
+                          <button onClick={() => removeTicker(ticker.symbol)}
+                            style={{ background: "transparent", border: "none", color: "#333", cursor: "pointer", padding: "3px 6px" }}
+                            onMouseEnter={e => e.currentTarget.style.color = "#ff6b6b"}
+                            onMouseLeave={e => e.currentTarget.style.color = "#333"}>
+                            <Icon name="trash" size={12}/>
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── App ───────────────────────────────────────────────────────────────────────
 export default function App() {
   const [tab, setTab] = useState("scanner");
@@ -936,6 +1133,7 @@ export default function App() {
     { id: "shortlist", label: `Shortlist${shortlist.length ? ` (${shortlist.length})` : ""}`, icon: "star" },
     { id: "portfolio", label: "Portfolio", icon: "briefcase" },
     { id: "peg", label: "PEG Chart", icon: "chart" },
+    { id: "universum", label: "Universum", icon: "db" },
   ];
 
   return (
@@ -982,12 +1180,14 @@ export default function App() {
                 {tab === "shortlist" && "Shortlist"}
                 {tab === "portfolio" && "Portfolio"}
                 {tab === "peg" && "PEG History"}
+                {tab === "universum" && "Scan Universum"}
               </h1>
               <p style={{ color: "#2a2a2a", fontSize: 12, marginTop: 3 }}>
                 {tab === "scanner" && "Scant je portfolio + shortlist · PEG snapshots auto-saved"}
                 {tab === "shortlist" && "Entry targets & thesis · persisted in Supabase"}
                 {tab === "portfolio" && "Live P&L · positions synced to Supabase"}
                 {tab === "peg" && "PEG over time · seed 120 days or build daily via scanner"}
+                {tab === "universum" && "Beheer welke tickers gescand worden · per sector georganiseerd"}
               </p>
             </div>
             {/* Tabs blijven gemount — display:none ipv unmounten zodat scan state bewaard blijft */}
@@ -1002,6 +1202,9 @@ export default function App() {
             </div>
             <div style={{ display: tab === "peg" ? "block" : "none" }}>
               <PEGChartTab portfolioSymbols={positions.map(p => p.symbol)}/>
+            </div>
+            <div style={{ display: tab === "universum" ? "block" : "none" }}>
+              <UniversumTab/>
             </div>
           </>
         )}
