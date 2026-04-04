@@ -541,11 +541,10 @@ const StockRow = ({ stock, actions }) => (
   </div>
 );
 
-function ScannerTab({ onAddToShortlist, portfolioSymbols, shortlistSymbols }) {
+function ScannerTab({ onAddToShortlist, portfolioSymbols, shortlistSymbols, scanResults, setScanResults }) {
   const [universe, setUniverse] = useState([]);
   const [customInput, setCustomInput] = useState("");
   const [filters, setFilters] = useState({ pegMax: 2, peMax: 40, epsGrowthMin: 10, grossMarginMin: 30, roicMin: 15, netDebtEbitdaMax: 2 });
-  const [results, setResults] = useState([]);
   const [loading, setLoading] = useState(false);
   const [progress, setProgress] = useState("");
   const [scanned, setScanned] = useState(0);
@@ -559,10 +558,9 @@ function ScannerTab({ onAddToShortlist, portfolioSymbols, shortlistSymbols }) {
   }, []);
 
   const scan = async () => {
-    // Universe = DB list + any custom additions, minus duplicates
     const extras = customInput.split(/[\s,]+/).map(s => s.trim().toUpperCase()).filter(Boolean);
     const syms = [...new Set([...universe, ...extras])];
-    setLoading(true); setResults([]); setScanned(0); setTotal(syms.length);
+    setLoading(true); setScanResults([]); setScanned(0); setTotal(syms.length);
     const out = [];
     for (let i = 0; i < syms.length; i++) {
       const sym = syms[i];
@@ -576,10 +574,10 @@ function ScannerTab({ onAddToShortlist, portfolioSymbols, shortlistSymbols }) {
       } catch (e) { /* skip failed */ }
     }
     setLoading(false); setProgress(""); setScanned(0);
-    setResults(out.sort((a, b) => (a.peg ?? 99) - (b.peg ?? 99)));
+    setScanResults(out.sort((a, b) => (a.peg ?? 99) - (b.peg ?? 99)));
   };
 
-  const filtered = results.filter(s =>
+  const filtered = scanResults.filter(s =>
     (s.peg == null || s.peg <= filters.pegMax) &&
     (s.pe == null || s.pe <= filters.peMax) &&
     s.epsGrowth >= filters.epsGrowthMin &&
@@ -633,11 +631,11 @@ function ScannerTab({ onAddToShortlist, portfolioSymbols, shortlistSymbols }) {
       </div>
 
       {/* Results */}
-      {results.length > 0 && (
+      {scanResults.length > 0 && (
         <div style={{ background: "#070707", borderRadius: 12, border: "1px solid #181818", overflow: "hidden" }}>
           <div style={{ padding: "11px 20px", borderBottom: "1px solid #181818", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             <span style={{ fontSize: 11, color: "#3a3a3a", fontFamily: "monospace" }}>
-              {filtered.length} voldoen aan filters van {results.length} gescand · ★ = in portfolio/shortlist
+              {filtered.length} voldoen aan filters van {scanResults.length} gescand · ★ = in portfolio/shortlist
             </span>
             <div style={{ display: "flex", gap: 6 }}>
               <Badge color="#00e5a0">PEG &lt;0.8</Badge>
@@ -908,6 +906,8 @@ export default function App() {
   const [shortlist, setShortlist] = useState([]);
   const [positions, setPositions] = useState([]);
   const [booting, setBooting] = useState(true);
+  // Scanresultaten leven in App zodat ze bewaard blijven bij tab-wissels
+  const [scanResults, setScanResults] = useState([]);
 
   useEffect(() => {
     const init = async () => {
@@ -990,10 +990,19 @@ export default function App() {
                 {tab === "peg" && "PEG over time · seed 120 days or build daily via scanner"}
               </p>
             </div>
-            {tab === "scanner" && <ScannerTab onAddToShortlist={addToShortlist} portfolioSymbols={positions.map(p => p.symbol)} shortlistSymbols={shortlist.map(s => s.symbol)}/>}
-            {tab === "shortlist" && <ShortlistTab shortlist={shortlist} setShortlist={setShortlist}/>}
-            {tab === "portfolio" && <PortfolioTab positions={positions} setPositions={setPositions}/>}
-            {tab === "peg" && <PEGChartTab portfolioSymbols={positions.map(p => p.symbol)}/>}
+            {/* Tabs blijven gemount — display:none ipv unmounten zodat scan state bewaard blijft */}
+            <div style={{ display: tab === "scanner" ? "block" : "none" }}>
+              <ScannerTab onAddToShortlist={addToShortlist} portfolioSymbols={positions.map(p => p.symbol)} shortlistSymbols={shortlist.map(s => s.symbol)} scanResults={scanResults} setScanResults={setScanResults}/>
+            </div>
+            <div style={{ display: tab === "shortlist" ? "block" : "none" }}>
+              <ShortlistTab shortlist={shortlist} setShortlist={setShortlist}/>
+            </div>
+            <div style={{ display: tab === "portfolio" ? "block" : "none" }}>
+              <PortfolioTab positions={positions} setPositions={setPositions}/>
+            </div>
+            <div style={{ display: tab === "peg" ? "block" : "none" }}>
+              <PEGChartTab portfolioSymbols={positions.map(p => p.symbol)}/>
+            </div>
           </>
         )}
       </div>
