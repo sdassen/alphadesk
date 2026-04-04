@@ -482,201 +482,6 @@ function PEGChartTab({ portfolioSymbols }) {
   );
 }
 
-// ── Scanner ───────────────────────────────────────────────────────────────────
-const COLS = "2.5fr 1fr 1fr 1.8fr 1fr 1fr 1fr 1fr 1fr 80px";
-
-const roicColor = (v) => v == null ? "#555" : v >= 20 ? "#00e5a0" : v >= 15 ? "#f5c842" : "#ff6b6b";
-const ndColor   = (v) => v == null ? "#555" : v <= 1  ? "#00e5a0" : v <= 2  ? "#f5c842" : "#ff6b6b";
-const fcfColor  = (v) => v == null ? "#555" : v >= 15 ? "#00e5a0" : v >= 8  ? "#f5c842" : "#ff6b6b";
-const shortColor= (v) => v == null ? "#555" : v >= 20 ? "#ff6b6b" : v >= 10 ? "#f5c842" : "#666";
-const evColor   = (v) => v == null ? "#555" : v <= 15 ? "#00e5a0" : v <= 30  ? "#f5c842" : "#ff6b6b";
-
-const TableHeader = () => (
-  <div style={{ display: "grid", gridTemplateColumns: COLS, padding: "10px 20px", borderBottom: "1px solid #1a1a1a" }}>
-    {["Symbol / Name", "Price", "Chg%", "PEG", "fwd P/E", "EPS Grw", "Gr.Mgn", "ROIC", "ND/EBITDA", ""].map((h, i) => (
-      <div key={i} style={{ fontSize: 10, color: "#3a3a3a", fontWeight: 700, letterSpacing: 1.1, textTransform: "uppercase", fontFamily: "monospace", textAlign: i === 9 ? "right" : "left" }}>{h}</div>
-    ))}
-  </div>
-);
-
-const StockRow = ({ stock, actions }) => (
-  <div style={{ borderBottom: "1px solid #0e0e0e", transition: "background 0.15s" }}
-    onMouseEnter={e => e.currentTarget.style.background = "#0b0b0b"}
-    onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
-    {/* Primary row */}
-    <div style={{ display: "grid", gridTemplateColumns: COLS, alignItems: "center", padding: "11px 20px 4px" }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-        {stock.logo && <img src={stock.logo} alt="" style={{ width: 26, height: 26, borderRadius: 6, objectFit: "contain", background: "#141414", padding: 2 }} onError={e => e.target.style.display="none"}/>}
-        <div>
-          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-            <span style={{ fontFamily: "monospace", fontWeight: 700, fontSize: 13, color: "#fff" }}>{stock.symbol}</span>
-            {stock.pegSource && <span style={{ fontSize: 9, color: "#333", border: "1px solid #1e1e1e", borderRadius: 3, padding: "1px 4px", fontFamily: "monospace" }}>{stock.pegSource}</span>}
-          </div>
-          <div style={{ fontSize: 11, color: "#777", marginTop: 1, maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{stock.name}</div>
-        </div>
-      </div>
-      <div style={{ fontFamily: "monospace", fontSize: 13, color: "#d0d0d0" }}>{fmt.price(stock.price)}</div>
-      <div style={{ fontFamily: "monospace", fontSize: 13, color: stock.change >= 0 ? "#00e5a0" : "#ff6b6b", fontWeight: 600 }}>{fmt.pct(stock.change)}</div>
-      <PEGBar peg={stock.peg}/>
-      <div style={{ fontFamily: "monospace", fontSize: 12, color: stock.forwardPE && stock.forwardPE < 25 ? "#00e5a0" : stock.forwardPE < 40 ? "#f5c842" : "#ff6b6b" }}>{fmt.num(stock.forwardPE)}</div>
-      <div style={{ fontFamily: "monospace", fontSize: 12, color: "#666" }}>{fmt.pct(stock.epsGrowth)}</div>
-      <div style={{ fontFamily: "monospace", fontSize: 12, color: "#666" }}>{fmt.pct(stock.grossMargin)}</div>
-      <div style={{ fontFamily: "monospace", fontSize: 12, color: roicColor(stock.roic), fontWeight: 600 }}>{stock.roic != null ? fmt.pct(stock.roic) : "—"}</div>
-      <div style={{ fontFamily: "monospace", fontSize: 12, color: ndColor(stock.netDebtEbitda), fontWeight: 600 }}>{stock.netDebtEbitda != null ? fmt.num(stock.netDebtEbitda) : "—"}</div>
-      <div style={{ display: "flex", gap: 5, justifyContent: "flex-end" }}>
-        {actions.map((a, i) => (
-          <button key={i} onClick={() => a.fn(stock)} title={a.label}
-            style={{ background: "#141414", border: "1px solid #222", borderRadius: 6, color: a.color || "#555", padding: "5px 8px", cursor: "pointer", display: "flex", alignItems: "center", transition: "all 0.15s" }}
-            onMouseEnter={e => { e.currentTarget.style.borderColor = a.color || "#444"; e.currentTarget.style.color = a.color || "#ccc"; }}
-            onMouseLeave={e => { e.currentTarget.style.borderColor = "#222"; e.currentTarget.style.color = a.color || "#555"; }}>
-            <Icon name={a.icon} size={12}/>
-          </button>
-        ))}
-      </div>
-    </div>
-    {/* Secondary row: FCF Margin, FCF Yield, EV/EBITDA, Short % */}
-    <div style={{ display: "flex", gap: 20, padding: "3px 20px 10px", paddingLeft: stock.logo ? 76 : 20 }}>
-      {[
-        ["FCF Mgn", stock.fcfMargin != null ? fmt.pct(stock.fcfMargin) : "—", fcfColor(stock.fcfMargin)],
-        ["FCF Yield", stock.fcfYield != null ? fmt.pct(stock.fcfYield) : "—", fcfColor(stock.fcfYield)],
-        ["EV/EBITDA", stock.evEbitda != null ? fmt.num(stock.evEbitda) : "—", evColor(stock.evEbitda)],
-        ["Short%", stock.shortPct != null ? fmt.pct(stock.shortPct) : "—", shortColor(stock.shortPct)],
-        ["Op.Mgn", stock.operatingMargin != null ? fmt.pct(stock.operatingMargin) : "—", "#555"],
-        ["Rev Grw", fmt.pct(stock.revenueGrowth), "#555"],
-      ].map(([label, val, color]) => (
-        <div key={label} style={{ display: "flex", alignItems: "baseline", gap: 5 }}>
-          <span style={{ fontSize: 9, color: "#333", textTransform: "uppercase", letterSpacing: 0.8, fontFamily: "monospace" }}>{label}</span>
-          <span style={{ fontSize: 11, color, fontFamily: "monospace", fontWeight: 600 }}>{val}</span>
-        </div>
-      ))}
-    </div>
-  </div>
-);
-
-function ScannerTab({ onAddToShortlist, portfolioSymbols, shortlistSymbols, scanResults, setScanResults }) {
-  const [universe, setUniverse] = useState([]);
-  const [customInput, setCustomInput] = useState("");
-  const [filters, setFilters] = useState({ pegMax: 2, peMax: 40, epsGrowthMin: 10, grossMarginMin: 30, roicMin: 15, netDebtEbitdaMax: 2, evEbitdaMax: 30, fcfMarginMin: 0 });
-  const [loading, setLoading] = useState(false);
-  const [progress, setProgress] = useState("");
-  const [scanned, setScanned] = useState(0);
-  const [total, setTotal] = useState(0);
-
-  // Load universe from DB on mount
-  useEffect(() => {
-    SB.from("scan_universe").select("symbol").eq("active", true).order("symbol").then(({ data }) => {
-      setUniverse((data || []).map(r => r.symbol));
-    });
-  }, []);
-
-  const scan = async () => {
-    const extras = customInput.split(/[\s,]+/).map(s => s.trim().toUpperCase()).filter(Boolean);
-    const syms = [...new Set([...universe, ...extras])];
-    setLoading(true); setScanResults([]); setScanned(0); setTotal(syms.length);
-    const out = [];
-    for (let i = 0; i < syms.length; i++) {
-      const sym = syms[i];
-      setProgress(sym); setScanned(i + 1);
-      try {
-        const d = await fetchFull(sym);
-        if (d) {
-          out.push(d);
-          if (d.peg) db.savePegSnapshot(d.symbol, d.peg, d.pe, d.price, d.epsGrowth).catch(() => {});
-        }
-      } catch (e) { /* skip failed */ }
-    }
-    setLoading(false); setProgress(""); setScanned(0);
-    setScanResults(out.sort((a, b) => (a.peg ?? 99) - (b.peg ?? 99)));
-  };
-
-  const filtered = scanResults.filter(s =>
-    (s.peg == null || s.peg <= filters.pegMax) &&
-    (s.forwardPE == null || s.forwardPE <= filters.peMax) &&
-    s.epsGrowth >= filters.epsGrowthMin &&
-    s.grossMargin >= filters.grossMarginMin &&
-    (s.roic == null || s.roic >= filters.roicMin) &&
-    (s.netDebtEbitda == null || s.netDebtEbitda <= filters.netDebtEbitdaMax) &&
-    (s.evEbitda == null || s.evEbitda <= filters.evEbitdaMax) &&
-    (s.fcfMargin == null || s.fcfMargin >= filters.fcfMarginMin)
-  );
-
-  return (
-    <div>
-      {/* Universe info + scan controls */}
-      <div style={{ display: "flex", gap: 12, alignItems: "flex-start", marginBottom: 20, flexWrap: "wrap" }}>
-        <div style={{ flex: 1 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
-            <div style={{ fontSize: 10, color: "#444", letterSpacing: 1, textTransform: "uppercase" }}>Scan universe</div>
-            <Badge color="#555">{universe.length} stocks</Badge>
-          </div>
-          <div style={{ fontSize: 11, color: "#333", marginBottom: 10 }}>
-            Tech · Semi · Cloud · AI Infrastructure · Power · Fintech
-          </div>
-          <div>
-            <div style={{ fontSize: 10, color: "#444", marginBottom: 4, letterSpacing: 1, textTransform: "uppercase" }}>Extra symbols toevoegen (optioneel)</div>
-            <input value={customInput} onChange={e => setCustomInput(e.target.value)}
-              placeholder="e.g. ARM, SMCI, ..."
-              style={{ width: 280, background: "#0a0a0a", border: "1px solid #1e1e1e", borderRadius: 6, color: "#d0d0d0", padding: "7px 13px", fontSize: 13, fontFamily: "monospace" }}/>
-          </div>
-        </div>
-        <div style={{ display: "flex", flexDirection: "column", gap: 8, alignItems: "flex-end" }}>
-          <button onClick={scan} disabled={loading || universe.length === 0}
-            style={{ background: loading ? "#0d0d0d" : "#00e5a0", color: loading ? "#333" : "#000", border: "none", borderRadius: 8, padding: "10px 24px", fontWeight: 700, fontSize: 13, cursor: loading ? "not-allowed" : "pointer", display: "flex", alignItems: "center", gap: 8, fontFamily: "monospace", transition: "all 0.2s" }}>
-            {loading ? <Spinner/> : <Icon name="scan" size={14}/>}
-            {loading ? `${progress} (${scanned}/${total})` : `Scan ${universe.length} stocks`}
-          </button>
-          {loading && (
-            <div style={{ width: "100%", height: 3, background: "#1a1a1a", borderRadius: 2, overflow: "hidden" }}>
-              <div style={{ width: `${total ? (scanned / total) * 100 : 0}%`, height: "100%", background: "#00e5a0", transition: "width 0.3s ease", borderRadius: 2 }}/>
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* Filters */}
-      <div style={{ display: "flex", gap: 12, marginBottom: 20, flexWrap: "wrap" }}>
-        {[
-          ["PEG ≤", "pegMax", 0.1], ["fwd P/E ≤", "peMax", 1],
-          ["EPS Grw ≥%", "epsGrowthMin", 1], ["Gross Mgn ≥%", "grossMarginMin", 1],
-          ["ROIC ≥%", "roicMin", 1], ["ND/EBITDA ≤", "netDebtEbitdaMax", 0.1],
-          ["EV/EBITDA ≤", "evEbitdaMax", 1], ["FCF Mgn ≥%", "fcfMarginMin", 1],
-        ].map(([label, key, step]) => (
-          <div key={key}>
-            <div style={{ fontSize: 10, color: "#444", letterSpacing: 1, textTransform: "uppercase", marginBottom: 4 }}>{label}</div>
-            <input type="number" step={step} value={filters[key]} onChange={e => setFilters(p => ({ ...p, [key]: parseFloat(e.target.value) }))}
-              style={{ background: "#0a0a0a", border: "1px solid #1e1e1e", borderRadius: 6, color: "#d0d0d0", padding: "7px 11px", width: 90, fontSize: 13, fontFamily: "monospace" }}/>
-          </div>
-        ))}
-      </div>
-
-      {/* Results */}
-      {scanResults.length > 0 && (
-        <div style={{ background: "#070707", borderRadius: 12, border: "1px solid #181818", overflow: "hidden" }}>
-          <div style={{ padding: "11px 20px", borderBottom: "1px solid #181818", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <span style={{ fontSize: 11, color: "#3a3a3a", fontFamily: "monospace" }}>
-              {filtered.length} match filters from {scanResults.length} scanned · ★ = in portfolio/shortlist
-            </span>
-            <div style={{ display: "flex", gap: 6 }}>
-              <Badge color="#00e5a0">PEG &lt;0.8</Badge>
-              <Badge color="#f5c842">0.8–1.5</Badge>
-              <Badge color="#ff6b6b">&gt;1.5</Badge>
-            </div>
-          </div>
-          <TableHeader/>
-          {filtered.map(s => {
-            const inPortfolio = portfolioSymbols.includes(s.symbol);
-            const inShortlist = shortlistSymbols.includes(s.symbol);
-            return <StockRow key={s.symbol} stock={{ ...s, inPortfolio, inShortlist }} actions={[
-              { label: "Add to Shortlist", icon: "star", color: inShortlist ? "#00e5a0" : "#f5c842", fn: onAddToShortlist }
-            ]}/>;
-          })}
-          {filtered.length === 0 && <div style={{ padding: 40, textAlign: "center", color: "#2a2a2a", fontFamily: "monospace" }}>No stocks match the filters</div>}
-        </div>
-      )}
-    </div>
-  );
-}
-
 // ── Shortlist Entry Timing Dashboard ─────────────────────────────────────────
 function ShortlistTab({ shortlist, setShortlist }) {
   const [adding, setAdding] = useState(false);
@@ -1073,203 +878,6 @@ function PortfolioTab({ positions, setPositions }) {
   );
 }
 
-// ── Universum Tab ─────────────────────────────────────────────────────────────
-function UniversumTab() {
-  const [universe, setUniverse] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [enriching, setEnriching] = useState(false);
-  const [enrichProgress, setEnrichProgress] = useState("");
-  const [newSymbol, setNewSymbol] = useState("");
-  const [newSector, setNewSector] = useState("");
-  const [search, setSearch] = useState("");
-  const [collapsedSectors, setCollapsedSectors] = useState({});
-
-  const load = async () => {
-    setLoading(true);
-    const { data } = await SB.from("scan_universe")
-      .select("*")
-      .order("sector").order("symbol");
-    setUniverse(data || []);
-    setLoading(false);
-  };
-
-  useEffect(() => { load(); }, []);
-
-  // Enrich: haal naam + market cap + revenue op via Yahoo voor alle ontbrekende entries
-  const enrichAll = async () => {
-    const missing = universe.filter(u => !u.name || !u.market_cap);
-    if (!missing.length) return;
-    setEnriching(true);
-    for (const item of missing) {
-      setEnrichProgress(`${item.symbol}…`);
-      try {
-        const data = await yahooSummary(item.symbol);
-        const fin = data?.quoteSummary?.result?.[0];
-        const fd = fin?.financialData || {};
-        const sd = fin?.summaryDetail || {};
-        const ap = fin?.assetProfile || {};
-        const name = ap.longName || ap.shortName || null;
-        const market_cap = sd.marketCap?.raw || null;
-        const revenue = fd.totalRevenue?.raw || null;
-        if (name || market_cap) {
-          await SB.from("scan_universe").update({ name, market_cap, revenue }).eq("symbol", item.symbol);
-          setUniverse(p => p.map(u => u.symbol === item.symbol ? { ...u, name, market_cap, revenue } : u));
-        }
-      } catch (e) { /* skip */ }
-      await new Promise(r => setTimeout(r, 150)); // rate limit
-    }
-    setEnriching(false);
-    setEnrichProgress("");
-  };
-
-  const addTicker = async () => {
-    const sym = newSymbol.trim().toUpperCase();
-    if (!sym) return;
-    const sector = newSector.trim() || "Other";
-    await SB.from("scan_universe").upsert({ symbol: sym, sector, active: true }, { onConflict: "symbol" });
-    setNewSymbol(""); setNewSector("");
-    await load();
-  };
-
-  const removeTicker = async (symbol) => {
-    await SB.from("scan_universe").delete().eq("symbol", symbol);
-    setUniverse(p => p.filter(u => u.symbol !== symbol));
-  };
-
-  const toggleActive = async (symbol, active) => {
-    await SB.from("scan_universe").update({ active: !active }).eq("symbol", symbol);
-    setUniverse(p => p.map(u => u.symbol === symbol ? { ...u, active: !active } : u));
-  };
-
-  const toggleSector = (sector) => {
-    setCollapsedSectors(p => ({ ...p, [sector]: !p[sector] }));
-  };
-
-  const fmt = {
-    cap: (v) => !v ? "—" : v >= 1e12 ? `$${(v/1e12).toFixed(1)}T` : v >= 1e9 ? `$${(v/1e9).toFixed(1)}B` : `$${(v/1e6).toFixed(0)}M`,
-  };
-
-  const filtered = universe.filter(u =>
-    u.symbol.includes(search.toUpperCase()) ||
-    (u.name || "").toLowerCase().includes(search.toLowerCase())
-  );
-
-  // Group by sector
-  const sectors = {};
-  for (const u of filtered) {
-    if (!sectors[u.sector]) sectors[u.sector] = [];
-    sectors[u.sector].push(u);
-  }
-
-  const activeCount = universe.filter(u => u.active !== false).length;
-  const enrichedCount = universe.filter(u => u.name).length;
-
-  return (
-    <div>
-      {/* Header controls */}
-      <div style={{ display: "flex", gap: 12, alignItems: "flex-start", marginBottom: 20, flexWrap: "wrap" }}>
-        <div style={{ flex: 1 }}>
-          <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search by ticker or name…"
-            style={{ width: "100%", maxWidth: 300, background: "#0a0a0a", border: "1px solid #1e1e1e", borderRadius: 8, color: "#d0d0d0", padding: "8px 13px", fontSize: 13, fontFamily: "monospace" }}/>
-        </div>
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap', alignItems: 'center" }}>
-          <span style={{ fontSize: 11, color: "#444", fontFamily: "monospace", alignSelf: "center" }}>
-            {activeCount}/{universe.length} active · {enrichedCount} enriched
-          </span>
-          <button onClick={enrichAll} disabled={enriching}
-            style={{ background: "#0a0a0a", border: "1px solid #1e1e1e", borderRadius: 8, color: enriching ? "#333" : "#555", padding: "7px 13px", cursor: enriching ? "not-allowed" : "pointer", display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}>
-            {enriching ? <Spinner/> : <Icon name="refresh" size={13}/>}
-            {enriching ? enrichProgress : "Enrich names & revenue"}
-          </button>
-        </div>
-      </div>
-
-      {/* Add ticker */}
-      <div style={{ background: "#070707", border: "1px solid #1a1a1a", borderRadius: 10, padding: "14px 18px", marginBottom: 20, display: "flex", gap: 10, alignItems: "flex-end", flexWrap: "wrap" }}>
-        <div>
-          <div style={{ fontSize: 10, color: "#444", letterSpacing: 1, textTransform: "uppercase", marginBottom: 4 }}>Ticker</div>
-          <input value={newSymbol} onChange={e => setNewSymbol(e.target.value)} placeholder="AAPL"
-            onKeyDown={e => e.key === "Enter" && addTicker()}
-            style={{ width: 90, background: "#0d0d0d", border: "1px solid #222", borderRadius: 6, color: "#d0d0d0", padding: "7px 11px", fontSize: 13, fontFamily: "monospace" }}/>
-        </div>
-        <div>
-          <div style={{ fontSize: 10, color: "#444", letterSpacing: 1, textTransform: "uppercase", marginBottom: 4 }}>Sector</div>
-          <input value={newSector} onChange={e => setNewSector(e.target.value)} placeholder="e.g. Semiconductors"
-            onKeyDown={e => e.key === "Enter" && addTicker()}
-            style={{ width: 180, background: "#0d0d0d", border: "1px solid #222", borderRadius: 6, color: "#d0d0d0", padding: "7px 11px", fontSize: 13, fontFamily: "monospace" }}/>
-        </div>
-        <button onClick={addTicker}
-          style={{ background: "#00e5a0", border: "none", borderRadius: 8, color: "#000", padding: "7px 16px", fontWeight: 700, cursor: "pointer", display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}>
-          <Icon name="plus" size={13}/> Add
-        </button>
-      </div>
-
-      {loading ? (
-        <div style={{ display: "flex", alignItems: "center", gap: 10, color: "#333", fontFamily: "monospace", padding: "40px 0" }}><Spinner/> Loading…</div>
-      ) : (
-        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-          {Object.entries(sectors).sort().map(([sector, tickers]) => {
-            const collapsed = collapsedSectors[sector];
-            const sectorActive = tickers.filter(t => t.active !== false).length;
-            return (
-              <div key={sector} style={{ background: "#070707", border: "1px solid #141414", borderRadius: 10, overflow: "hidden" }}>
-                {/* Sector header */}
-                <div onClick={() => toggleSector(sector)}
-                  style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 18px", cursor: "pointer", userSelect: "none" }}
-                  onMouseEnter={e => e.currentTarget.style.background = "#0d0d0d"}
-                  onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                    <span style={{ fontFamily: "monospace", fontWeight: 700, fontSize: 13, color: "#e0e0e0" }}>{sector}</span>
-                    <span style={{ fontSize: 11, color: "#444", fontFamily: "monospace" }}>{sectorActive}/{tickers.length} active</span>
-                  </div>
-                  <span style={{ color: "#333", fontSize: 12 }}>{collapsed ? "▶" : "▼"}</span>
-                </div>
-
-                {/* Ticker rows */}
-                {!collapsed && (
-                  <div>
-                    {/* Column header */}
-                    <div style={{ display: "grid", gridTemplateColumns: "80px 1fr 120px 120px 80px 60px", gap: 0, padding: "6px 18px", borderTop: "1px solid #111", borderBottom: "1px solid #111" }}>
-                      {["Ticker", "Name", "Market Cap", "Revenue", "Active", ""].map((h, i) => (
-                        <div key={i} style={{ fontSize: 9, color: "#333", fontWeight: 700, letterSpacing: 1.2, textTransform: "uppercase", fontFamily: "monospace", textAlign: i >= 4 ? "center" : "left" }}>{h}</div>
-                      ))}
-                    </div>
-                    {tickers.map(ticker => (
-                      <div key={ticker.symbol}
-                        style={{ display: "grid", gridTemplateColumns: "80px 1fr 120px 120px 80px 60px", alignItems: "center", padding: "9px 18px", borderBottom: "1px solid #0c0c0c", opacity: ticker.active === false ? 0.4 : 1, transition: "opacity 0.2s" }}
-                        onMouseEnter={e => e.currentTarget.style.background = "#0b0b0b"}
-                        onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
-                        <div style={{ fontFamily: "monospace", fontWeight: 700, fontSize: 13, color: "#fff" }}>{ticker.symbol}</div>
-                        <div style={{ fontSize: 12, color: "#888", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", paddingRight: 12 }}>{ticker.name || <span style={{ color: "#333" }}>—</span>}</div>
-                        <div style={{ fontFamily: "monospace", fontSize: 12, color: "#666" }}>{fmt.cap(ticker.market_cap)}</div>
-                        <div style={{ fontFamily: "monospace", fontSize: 12, color: "#666" }}>{fmt.cap(ticker.revenue)}</div>
-                        <div style={{ textAlign: "center" }}>
-                          <button onClick={() => toggleActive(ticker.symbol, ticker.active !== false)}
-                            style={{ background: ticker.active !== false ? "#00e5a022" : "#1a1a1a", border: `1px solid ${ticker.active !== false ? "#00e5a044" : "#222"}`, borderRadius: 5, color: ticker.active !== false ? "#00e5a0" : "#444", padding: "3px 8px", cursor: "pointer", fontSize: 10, fontFamily: "monospace" }}>
-                            {ticker.active !== false ? "on" : "off"}
-                          </button>
-                        </div>
-                        <div style={{ textAlign: "center" }}>
-                          <button onClick={() => removeTicker(ticker.symbol)}
-                            style={{ background: "transparent", border: "none", color: "#333", cursor: "pointer", padding: "3px 6px" }}
-                            onMouseEnter={e => e.currentTarget.style.color = "#ff6b6b"}
-                            onMouseLeave={e => e.currentTarget.style.color = "#333"}>
-                            <Icon name="trash" size={12}/>
-                          </button>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      )}
-    </div>
-  );
-}
-
 // ── Markt Tab ─────────────────────────────────────────────────────────────────
 function MarktTab() {
   const [data, setData] = useState(null);
@@ -1516,8 +1124,6 @@ export default function App() {
   const [shortlist, setShortlist] = useState([]);
   const [positions, setPositions] = useState([]);
   const [booting, setBooting] = useState(true);
-  // Scan results live in App so they persist across tab switches
-  const [scanResults, setScanResults] = useState([]);
 
   useEffect(() => {
     const init = async () => {
@@ -1545,9 +1151,7 @@ export default function App() {
     { id: "markt", label: "Market", icon: "chart" },
     { id: "shortlist", label: `Shortlist${shortlist.length ? ` (${shortlist.length})` : ""}`, icon: "star" },
     { id: "portfolio", label: "Portfolio", icon: "briefcase" },
-    { id: "scanner", label: "Scanner", icon: "scan" },
     { id: "peg", label: "PEG Chart", icon: "chart" },
-    { id: "universum", label: "Universe", icon: "db" },
   ];
 
   return (
@@ -1592,26 +1196,18 @@ export default function App() {
               <h1 style={{ fontSize: 20, fontWeight: 700, color: "#e0e0e0", letterSpacing: -0.3 }}>
                 {tab === "markt" && "Market Dashboard"}
                 {tab === "shortlist" && "Entry Timing Dashboard"}
-                {tab === "scanner" && "Stock Scanner"}
                 {tab === "portfolio" && "Portfolio"}
                 {tab === "peg" && "PEG History"}
-                {tab === "universum" && "Scan Universe"}
               </h1>
               <p style={{ color: "#2a2a2a", fontSize: 12, marginTop: 3 }}>
                 {tab === "markt" && "Rational macro context · VIX · Fear & Greed · Yields · Sentiment"}
                 {tab === "shortlist" && "52-week position · analyst targets · entry signal per stock"}
-                {tab === "scanner" && "Scans universe on PEG and quality filters"}
                 {tab === "portfolio" && "Live P&L · positions synced with Supabase"}
                 {tab === "peg" && "PEG trend · grows with every scan"}
-                {tab === "universum" && "Manage which tickers are scanned"}
               </p>
             </div>
-            {/* Tabs stay mounted — display:none instead of unmounting so scan state is preserved */}
             <div style={{ display: tab === "markt" ? "block" : "none" }}>
               <MarktTab/>
-            </div>
-            <div style={{ display: tab === "scanner" ? "block" : "none" }}>
-              <ScannerTab onAddToShortlist={addToShortlist} portfolioSymbols={positions.map(p => p.symbol)} shortlistSymbols={shortlist.map(s => s.symbol)} scanResults={scanResults} setScanResults={setScanResults}/>
             </div>
             <div style={{ display: tab === "shortlist" ? "block" : "none" }}>
               <ShortlistTab shortlist={shortlist} setShortlist={setShortlist}/>
@@ -1621,9 +1217,6 @@ export default function App() {
             </div>
             <div style={{ display: tab === "peg" ? "block" : "none" }}>
               <PEGChartTab portfolioSymbols={positions.map(p => p.symbol)}/>
-            </div>
-            <div style={{ display: tab === "universum" ? "block" : "none" }}>
-              <UniversumTab/>
             </div>
           </>
         )}
