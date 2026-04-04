@@ -500,34 +500,40 @@ const StockRow = ({ stock, actions }) => (
 );
 
 function ScannerTab({ onAddToShortlist, portfolioSymbols, shortlistSymbols }) {
-  // Build symbol list from portfolio + shortlist, deduplicated
-  const dbSymbols = [...new Set([...portfolioSymbols, ...shortlistSymbols])];
-  const [input, setInput] = useState("");
+  const [universe, setUniverse] = useState([]);
+  const [customInput, setCustomInput] = useState("");
   const [filters, setFilters] = useState({ pegMax: 2, peMax: 40, epsGrowthMin: 10, grossMarginMin: 30, roicMin: 15, netDebtEbitdaMax: 2 });
   const [results, setResults] = useState([]);
   const [loading, setLoading] = useState(false);
   const [progress, setProgress] = useState("");
+  const [scanned, setScanned] = useState(0);
+  const [total, setTotal] = useState(0);
 
-  // When DB symbols load, prefill input
+  // Load universe from DB on mount
   useEffect(() => {
-    if (dbSymbols.length > 0 && !input) {
-      setInput(dbSymbols.join(", "));
-    }
-  }, [portfolioSymbols.length, shortlistSymbols.length]);
+    SB.from("scan_universe").select("symbol").order("symbol").then(({ data }) => {
+      setUniverse((data || []).map(r => r.symbol));
+    });
+  }, []);
 
   const scan = async () => {
-    const syms = input.split(/[\s,]+/).map(s => s.trim().toUpperCase()).filter(Boolean);
-    setLoading(true); setResults([]);
+    // Universe = DB list + any custom additions, minus duplicates
+    const extras = customInput.split(/[\s,]+/).map(s => s.trim().toUpperCase()).filter(Boolean);
+    const syms = [...new Set([...universe, ...extras])];
+    setLoading(true); setResults([]); setScanned(0); setTotal(syms.length);
     const out = [];
-    for (const sym of syms) {
-      setProgress(`Fetching ${sym}…`);
-      const d = await fetchFull(sym);
-      if (d) {
-        out.push(d);
-        if (d.peg) db.savePegSnapshot(d.symbol, d.peg, d.pe, d.price, d.epsGrowth).catch(() => {});
-      }
+    for (let i = 0; i < syms.length; i++) {
+      const sym = syms[i];
+      setProgress(sym); setScanned(i + 1);
+      try {
+        const d = await fetchFull(sym);
+        if (d) {
+          out.push(d);
+          if (d.peg) db.savePegSnapshot(d.symbol, d.peg, d.pe, d.price, d.epsGrowth).catch(() => {});
+        }
+      } catch (e) { /* skip failed */ }
     }
-    setLoading(false); setProgress("");
+    setLoading(false); setProgress(""); setScanned(0);
     setResults(out.sort((a, b) => (a.peg ?? 99) - (b.peg ?? 99)));
   };
 
@@ -542,18 +548,38 @@ function ScannerTab({ onAddToShortlist, portfolioSymbols, shortlistSymbols }) {
 
   return (
     <div>
+      {/* Universe info + scan controls */}
       <div style={{ display: "flex", gap: 12, alignItems: "flex-start", marginBottom: 20, flexWrap: "wrap" }}>
-        <div style={{ flex: 1, minWidth: 260 }}>
-          <div style={{ fontSize: 10, color: "#444", marginBottom: 5, letterSpacing: 1, textTransform: "uppercase" }}>Symbols</div>
-          <textarea value={input} onChange={e => setInput(e.target.value)}
-            style={{ width: "100%", background: "#0a0a0a", border: "1px solid #1e1e1e", borderRadius: 8, color: "#d0d0d0", padding: "9px 13px", fontSize: 13, fontFamily: "monospace", resize: "none", height: 50, boxSizing: "border-box" }}/>
+        <div style={{ flex: 1 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
+            <div style={{ fontSize: 10, color: "#444", letterSpacing: 1, textTransform: "uppercase" }}>Scan universum</div>
+            <Badge color="#555">{universe.length} stocks</Badge>
+          </div>
+          <div style={{ fontSize: 11, color: "#333", marginBottom: 10 }}>
+            Tech · Semi · Cloud · AI Infrastructure · Power · Fintech
+          </div>
+          <div>
+            <div style={{ fontSize: 10, color: "#444", marginBottom: 4, letterSpacing: 1, textTransform: "uppercase" }}>Extra symbols toevoegen (optioneel)</div>
+            <input value={customInput} onChange={e => setCustomInput(e.target.value)}
+              placeholder="bijv. ARM, SMCI, ..."
+              style={{ width: 280, background: "#0a0a0a", border: "1px solid #1e1e1e", borderRadius: 6, color: "#d0d0d0", padding: "7px 13px", fontSize: 13, fontFamily: "monospace" }}/>
+          </div>
         </div>
-        <button onClick={scan} disabled={loading}
-          style={{ marginTop: 21, background: loading ? "#0d0d0d" : "#00e5a0", color: loading ? "#333" : "#000", border: "none", borderRadius: 8, padding: "10px 20px", fontWeight: 700, fontSize: 13, cursor: loading ? "not-allowed" : "pointer", display: "flex", alignItems: "center", gap: 8, fontFamily: "monospace", transition: "all 0.2s" }}>
-          {loading ? <Spinner/> : <Icon name="scan" size={14}/>}
-          {loading ? progress || "Scanning…" : "Scan"}
-        </button>
+        <div style={{ display: "flex", flexDirection: "column", gap: 8, alignItems: "flex-end" }}>
+          <button onClick={scan} disabled={loading || universe.length === 0}
+            style={{ background: loading ? "#0d0d0d" : "#00e5a0", color: loading ? "#333" : "#000", border: "none", borderRadius: 8, padding: "10px 24px", fontWeight: 700, fontSize: 13, cursor: loading ? "not-allowed" : "pointer", display: "flex", alignItems: "center", gap: 8, fontFamily: "monospace", transition: "all 0.2s" }}>
+            {loading ? <Spinner/> : <Icon name="scan" size={14}/>}
+            {loading ? `${progress} (${scanned}/${total})` : `Scan ${universe.length} stocks`}
+          </button>
+          {loading && (
+            <div style={{ width: "100%", height: 3, background: "#1a1a1a", borderRadius: 2, overflow: "hidden" }}>
+              <div style={{ width: `${total ? (scanned / total) * 100 : 0}%`, height: "100%", background: "#00e5a0", transition: "width 0.3s ease", borderRadius: 2 }}/>
+            </div>
+          )}
+        </div>
       </div>
+
+      {/* Filters */}
       <div style={{ display: "flex", gap: 12, marginBottom: 20, flexWrap: "wrap" }}>
         {[["PEG ≤", "pegMax", 0.1], ["P/E ≤", "peMax", 1], ["EPS Grw ≥%", "epsGrowthMin", 1], ["Gross Mgn ≥%", "grossMarginMin", 1], ["ROIC ≥%", "roicMin", 1], ["ND/EBITDA ≤", "netDebtEbitdaMax", 0.1]].map(([label, key, step]) => (
           <div key={key}>
@@ -563,10 +589,14 @@ function ScannerTab({ onAddToShortlist, portfolioSymbols, shortlistSymbols }) {
           </div>
         ))}
       </div>
+
+      {/* Results */}
       {results.length > 0 && (
         <div style={{ background: "#070707", borderRadius: 12, border: "1px solid #181818", overflow: "hidden" }}>
           <div style={{ padding: "11px 20px", borderBottom: "1px solid #181818", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <span style={{ fontSize: 11, color: "#3a3a3a", fontFamily: "monospace" }}>{filtered.length}/{results.length} match · snapshots → DB</span>
+            <span style={{ fontSize: 11, color: "#3a3a3a", fontFamily: "monospace" }}>
+              {filtered.length} voldoen aan filters van {results.length} gescand · ★ = in portfolio/shortlist
+            </span>
             <div style={{ display: "flex", gap: 6 }}>
               <Badge color="#00e5a0">PEG &lt;0.8</Badge>
               <Badge color="#f5c842">0.8–1.5</Badge>
@@ -574,8 +604,14 @@ function ScannerTab({ onAddToShortlist, portfolioSymbols, shortlistSymbols }) {
             </div>
           </div>
           <TableHeader/>
-          {filtered.map(s => <StockRow key={s.symbol} stock={s} actions={[{ label: "Add to Shortlist", icon: "star", color: "#f5c842", fn: onAddToShortlist }]}/>)}
-          {filtered.length === 0 && <div style={{ padding: 40, textAlign: "center", color: "#2a2a2a", fontFamily: "monospace" }}>No stocks match filters</div>}
+          {filtered.map(s => {
+            const inPortfolio = portfolioSymbols.includes(s.symbol);
+            const inShortlist = shortlistSymbols.includes(s.symbol);
+            return <StockRow key={s.symbol} stock={{ ...s, inPortfolio, inShortlist }} actions={[
+              { label: "Add to Shortlist", icon: "star", color: inShortlist ? "#00e5a0" : "#f5c842", fn: onAddToShortlist }
+            ]}/>;
+          })}
+          {filtered.length === 0 && <div style={{ padding: 40, textAlign: "center", color: "#2a2a2a", fontFamily: "monospace" }}>Geen stocks voldoen aan de filters</div>}
         </div>
       )}
     </div>
