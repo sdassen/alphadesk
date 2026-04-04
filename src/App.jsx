@@ -59,16 +59,41 @@ async function fetchFull(symbol) {
   const sd = fin?.summaryDetail || {};
   const ap = fin?.assetProfile || {};
 
-  // Key metrics
-  const pe = sd.trailingPE?.raw || ks.trailingPE?.raw || null;
+  // ── EPS groei: meerdere bronnen, beste keuze ─────────────────────────────
+  // Bron 1: Forward EPS groei (forwardEps vs trailingEps) — meest relevant voor PEG
+  const trailingEps = ks.trailingEps?.raw || null;
+  const forwardEps = ks.forwardEps?.raw || null;
+  const forwardGrowth = trailingEps && forwardEps && trailingEps > 0
+    ? (forwardEps - trailingEps) / Math.abs(trailingEps)
+    : null;
 
-  // EPS growth: prefer earningsGrowth (TTM YoY) over quarterly growth
-  const epsGrowthRaw = fd.earningsGrowth?.raw
-    || ks.earningsQuarterlyGrowth?.raw
-    || fd.revenueGrowth?.raw
-    || 0;
+  // Bron 2: TTM earnings growth (YoY actuals)
+  const ttmGrowth = fd.earningsGrowth?.raw || null;
+
+  // Bron 3: Quarterly earnings growth
+  const qtrGrowth = ks.earningsQuarterlyGrowth?.raw || null;
+
+  // Bron 4: Revenue growth als fallback
+  const revGrowth = fd.revenueGrowth?.raw || null;
+
+  // Prioriteit: forward > TTM > quarterly > revenue
+  let epsGrowthRaw, pegSource;
+  if (forwardGrowth !== null && forwardGrowth > -0.5 && forwardGrowth < 5) {
+    epsGrowthRaw = forwardGrowth;
+    pegSource = "fwd";
+  } else if (ttmGrowth !== null) {
+    epsGrowthRaw = ttmGrowth;
+    pegSource = "ttm";
+  } else if (qtrGrowth !== null) {
+    epsGrowthRaw = qtrGrowth;
+    pegSource = "qtr";
+  } else {
+    epsGrowthRaw = revGrowth || 0;
+    pegSource = "rev";
+  }
+
   const epsGrowthPct = epsGrowthRaw * 100;
-
+  const pe = sd.trailingPE?.raw || ks.trailingPE?.raw || null;
   const peg = pe && epsGrowthPct > 0 ? pe / epsGrowthPct : null;
 
   const grossMargin = (fd.grossMargins?.raw || 0) * 100;
@@ -91,6 +116,7 @@ async function fetchFull(symbol) {
     change,
     pe,
     peg,
+    pegSource,
     epsGrowth: epsGrowthPct,
     revenueGrowth,
     grossMargin,
@@ -455,10 +481,10 @@ function PEGChartTab({ portfolioSymbols }) {
 }
 
 // ── Scanner ───────────────────────────────────────────────────────────────────
-const COLS = "2fr 1fr 1fr 1.5fr 1fr 1fr 1fr 1fr 1fr 90px";
+const COLS = "2.5fr 1fr 1fr 1.5fr 1fr 1fr 1fr 1fr 1fr 90px";
 const TableHeader = () => (
   <div style={{ display: "grid", gridTemplateColumns: COLS, padding: "10px 20px", borderBottom: "1px solid #1a1a1a" }}>
-    {["Symbol", "Price", "Chg%", "PEG", "P/E", "EPS Grw", "Margin", "ROIC", "ND/EBITDA", ""].map((h, i) => (
+    {["Symbol / Naam", "Price", "Chg%", "PEG", "P/E", "EPS Grw", "Margin", "ROIC", "ND/EBITDA", ""].map((h, i) => (
       <div key={i} style={{ fontSize: 10, color: "#3a3a3a", fontWeight: 700, letterSpacing: 1.2, textTransform: "uppercase", fontFamily: "monospace", textAlign: i === 9 ? "right" : "left" }}>{h}</div>
     ))}
   </div>
@@ -472,10 +498,13 @@ const StockRow = ({ stock, actions }) => (
     onMouseEnter={e => e.currentTarget.style.background = "#0b0b0b"}
     onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
     <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-      {stock.logo && <img src={stock.logo} alt="" style={{ width: 26, height: 26, borderRadius: 6, objectFit: "contain", background: "#141414", padding: 2 }} onError={e => e.target.style.display="none"}/>}
+      {stock.logo && <img src={stock.logo} alt="" style={{ width: 28, height: 28, borderRadius: 6, objectFit: "contain", background: "#141414", padding: 2 }} onError={e => e.target.style.display="none"}/>}
       <div>
-        <div style={{ fontFamily: "monospace", fontWeight: 700, fontSize: 13, color: "#fff" }}>{stock.symbol}</div>
-        <div style={{ fontSize: 10, color: "#444", marginTop: 1, maxWidth: 110, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{stock.name}</div>
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <span style={{ fontFamily: "monospace", fontWeight: 700, fontSize: 13, color: "#fff" }}>{stock.symbol}</span>
+          {stock.pegSource && <span style={{ fontSize: 9, color: "#444", border: "1px solid #222", borderRadius: 3, padding: "1px 4px", fontFamily: "monospace" }}>{stock.pegSource}</span>}
+        </div>
+        <div style={{ fontSize: 11, color: "#888", marginTop: 2, maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{stock.name}</div>
       </div>
     </div>
     <div style={{ fontFamily: "monospace", fontSize: 13, color: "#d0d0d0" }}>{fmt.price(stock.price)}</div>
