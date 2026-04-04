@@ -872,28 +872,13 @@ function PortfolioTab({ positions, setPositions }) {
       };
     });
 
-    const prompt = `You are a rational, unemotional investment analyst. Here is my current stock portfolio:
+    const prompt = `You are a rational investment analyst. Analyze this portfolio and give rebalancing advice.
 
-${JSON.stringify(portfolioData, null, 2)}
+PORTFOLIO (value $${totalValue.toFixed(0)}, return ${ret.toFixed(1)}%):
+${portfolioData.map(p => `${p.symbol}: ${p.shares} shares, avg $${p.avgCost}, now $${p.currentPrice}, gain ${p.gainLossPct}%, weight ${p.portfolioWeight}%, fwdPE ${p.forwardPE}, PEG ${p.peg}, analyst upside ${p.analystUpside}%, rec ${p.analystRec}`).join('\n')}
 
-Total portfolio value: $${totalValue.toFixed(0)}
-Total return: ${ret.toFixed(1)}%
-
-Analyze this portfolio and provide specific rebalancing recommendations. For each stock, assess:
-1. Is it overvalued based on PEG and forward P/E?
-2. Is it undervalued with strong analyst upside?
-3. What is the portfolio concentration risk?
-
-Then give 2-4 specific, actionable recommendations such as:
-- "Trim POWL by 50% (currently +192% gain, high forward P/E) and add to MU (analyst upside +X%)"
-- "MRVL weight is too high at X% — consider reducing"
-
-Be direct, specific, and numbers-driven. No emotional language. Format as JSON with this structure:
-{
-  "summary": "one sentence portfolio assessment",
-  "signals": [{"symbol": "X", "signal": "TRIM|HOLD|ADD", "reason": "...", "action": "specific action"}],
-  "rebalance": [{"from": "SYMBOL", "to": "SYMBOL", "rationale": "...", "urgency": "high|medium|low"}]
-}`;
+Return ONLY valid JSON, no other text:
+{"summary":"one sentence assessment","signals":[{"symbol":"X","signal":"TRIM or HOLD or ADD","reason":"brief reason","action":"specific action"}],"rebalance":[{"from":"X","to":"Y","rationale":"brief reason","urgency":"high or medium or low"}]}`;
 
     try {
       const response = await fetch("/api/analyze", {
@@ -901,7 +886,7 @@ Be direct, specific, and numbers-driven. No emotional language. Format as JSON w
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           model: "claude-sonnet-4-5",
-          max_tokens: 2000,
+          max_tokens: 4000,
           messages: [{ role: "user", content: prompt }],
         }),
       });
