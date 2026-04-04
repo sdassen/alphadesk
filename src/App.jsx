@@ -900,18 +900,20 @@ Be direct, specific, and numbers-driven. No emotional language. Format as JSON w
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          model: "claude-sonnet-4-20250514",
+          model: "claude-sonnet-4-5",
           max_tokens: 1000,
           messages: [{ role: "user", content: prompt }],
         }),
       });
       const data = await response.json();
+      if (data.error) throw new Error(data.error.message || JSON.stringify(data.error));
       const text = data.content?.find(b => b.type === "text")?.text || "";
       const clean = text.replace(/```json|```/g, "").trim();
       const parsed = JSON.parse(clean);
       setAdvice(parsed);
     } catch (e) {
-      setAdvice({ error: "Could not generate analysis. Try again." });
+      console.error("AI analysis error:", e);
+      setAdvice({ error: `Analysis failed: ${e.message}` });
     }
     setLoadingAdvice(false);
   };
@@ -1004,7 +1006,9 @@ Be direct, specific, and numbers-driven. No emotional language. Format as JSON w
         </div>
       )}
       {advice?.error && (
-        <div style={{ background: "#0a0a0a", border: "1px solid #ff6b6b22", borderRadius: 8, padding: "12px 16px", marginBottom: 13, fontSize: 12, color: "#ff6b6b" }}>{advice.error}</div>
+        <div style={{ background: "#0a0a0a", border: "1px solid #ff6b6b22", borderRadius: 8, padding: "12px 16px", marginBottom: 13, fontSize: 12, color: "#ff6b6b" }}>
+          {advice.error} — check browser console for details.
+        </div>
       )}
 
       {adding && (
