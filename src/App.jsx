@@ -61,11 +61,10 @@ async function fetchFull(symbol) {
 
   // Key metrics
   const pe = sd.trailingPE?.raw || ks.trailingPE?.raw || null;
-  const forwardPE = sd.forwardPE?.raw || null;
 
-  // EPS growth: use analyst 5yr estimate if available, else YoY EPS
-  const epsGrowthRaw = ks.earningsQuarterlyGrowth?.raw
-    || fd.earningsGrowth?.raw
+  // EPS growth: prefer earningsGrowth (TTM YoY) over quarterly growth
+  const epsGrowthRaw = fd.earningsGrowth?.raw
+    || ks.earningsQuarterlyGrowth?.raw
     || fd.revenueGrowth?.raw
     || 0;
   const epsGrowthPct = epsGrowthRaw * 100;
@@ -73,7 +72,7 @@ async function fetchFull(symbol) {
   const peg = pe && epsGrowthPct > 0 ? pe / epsGrowthPct : null;
 
   const grossMargin = (fd.grossMargins?.raw || 0) * 100;
-  const roic = (fd.returnOnEquity?.raw || 0) * 100; // ROE as proxy; ROIC not directly in Yahoo free
+  const roic = (fd.returnOnEquity?.raw || 0) * 100;
   const revenueGrowth = (fd.revenueGrowth?.raw || 0) * 100;
 
   // Net Debt / EBITDA
@@ -83,8 +82,7 @@ async function fetchFull(symbol) {
   const netDebt = totalDebt - totalCash;
   const netDebtEbitda = ebitda > 0 ? netDebt / ebitda : null;
 
-  const marketCap = sd.marketCap?.raw || ks.enterpriseValue?.raw || null;
-  const name = fd.companyOfficers ? ap.longName || symbol : symbol;
+  const marketCap = sd.marketCap?.raw || null;
 
   return {
     symbol: symbol.toUpperCase(),
@@ -92,7 +90,6 @@ async function fetchFull(symbol) {
     price,
     change,
     pe,
-    forwardPE,
     peg,
     epsGrowth: epsGrowthPct,
     revenueGrowth,
@@ -502,12 +499,21 @@ const StockRow = ({ stock, actions }) => (
   </div>
 );
 
-function ScannerTab({ onAddToShortlist }) {
-  const [input, setInput] = useState("ASML, TSM, MU, MRVL, POWL, CLS, NVDA, AMD, AMAT, LRCX");
+function ScannerTab({ onAddToShortlist, portfolioSymbols, shortlistSymbols }) {
+  // Build symbol list from portfolio + shortlist, deduplicated
+  const dbSymbols = [...new Set([...portfolioSymbols, ...shortlistSymbols])];
+  const [input, setInput] = useState("");
   const [filters, setFilters] = useState({ pegMax: 2, peMax: 40, epsGrowthMin: 10, grossMarginMin: 30, roicMin: 15, netDebtEbitdaMax: 2 });
   const [results, setResults] = useState([]);
   const [loading, setLoading] = useState(false);
   const [progress, setProgress] = useState("");
+
+  // When DB symbols load, prefill input
+  useEffect(() => {
+    if (dbSymbols.length > 0 && !input) {
+      setInput(dbSymbols.join(", "));
+    }
+  }, [portfolioSymbols.length, shortlistSymbols.length]);
 
   const scan = async () => {
     const syms = input.split(/[\s,]+/).map(s => s.trim().toUpperCase()).filter(Boolean);
@@ -880,7 +886,7 @@ export default function App() {
           ))}
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 10, color: "#1e1e1e", fontFamily: "monospace" }}>
-          <Icon name="db" size={10}/> Supabase · FMP Live
+          <Icon name="db" size={10}/> Supabase · Yahoo Finance
         </div>
       </div>
 
@@ -900,13 +906,13 @@ export default function App() {
                 {tab === "peg" && "PEG History"}
               </h1>
               <p style={{ color: "#2a2a2a", fontSize: 12, marginTop: 3 }}>
-                {tab === "scanner" && "PEG-first scan · snapshots auto-saved on every scan"}
+                {tab === "scanner" && "Scant je portfolio + shortlist · PEG snapshots auto-saved"}
                 {tab === "shortlist" && "Entry targets & thesis · persisted in Supabase"}
                 {tab === "portfolio" && "Live P&L · positions synced to Supabase"}
                 {tab === "peg" && "PEG over time · seed 120 days or build daily via scanner"}
               </p>
             </div>
-            {tab === "scanner" && <ScannerTab onAddToShortlist={addToShortlist}/>}
+            {tab === "scanner" && <ScannerTab onAddToShortlist={addToShortlist} portfolioSymbols={positions.map(p => p.symbol)} shortlistSymbols={shortlist.map(s => s.symbol)}/>}
             {tab === "shortlist" && <ShortlistTab shortlist={shortlist} setShortlist={setShortlist}/>}
             {tab === "portfolio" && <PortfolioTab positions={positions} setPositions={setPositions}/>}
             {tab === "peg" && <PEGChartTab portfolioSymbols={positions.map(p => p.symbol)}/>}
