@@ -896,7 +896,7 @@ Be direct, specific, and numbers-driven. No emotional language. Format as JSON w
 }`;
 
     try {
-      const response = await fetch("https://api.anthropic.com/v1/messages", {
+      const response = await fetch("/api/analyze", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
