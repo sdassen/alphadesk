@@ -290,25 +290,19 @@ function PEGChartTab({ portfolioSymbols }) {
   const [selectedSymbols, setSelectedSymbols] = useState([]);
   const [availableSymbols, setAvailableSymbols] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [seeding, setSeeding] = useState(false);
-  const [seedProgress, setSeedProgress] = useState("");
   const [chartData, setChartData] = useState([]);
 
   const loadHistory = async () => {
     setLoading(true);
     const raw = await db.getAllPegHistory();
-
-    // Group by symbol
     const bySymbol = {};
     for (const row of raw) {
       if (!bySymbol[row.symbol]) bySymbol[row.symbol] = {};
       bySymbol[row.symbol][row.date] = parseFloat(row.peg?.toFixed(3));
     }
     setAllHistory(bySymbol);
-
     const syms = Object.keys(bySymbol);
     setAvailableSymbols(syms);
-    // Auto-select portfolio symbols that have data
     const toSelect = portfolioSymbols.filter(s => syms.includes(s));
     setSelectedSymbols(toSelect.length ? toSelect : syms.slice(0, 4));
     setLoading(false);
@@ -316,7 +310,6 @@ function PEGChartTab({ portfolioSymbols }) {
 
   useEffect(() => { loadHistory(); }, []);
 
-  // Build chart data: unified date axis
   useEffect(() => {
     if (!Object.keys(allHistory).length || !selectedSymbols.length) { setChartData([]); return; }
     const dateSet = new Set();
@@ -325,7 +318,7 @@ function PEGChartTab({ portfolioSymbols }) {
     }
     const dates = [...dateSet].sort();
     const data = dates.map(date => {
-      const row = { date: date.slice(5) }; // MM-DD
+      const row = { date: date.slice(5) };
       for (const sym of selectedSymbols) {
         if (allHistory[sym]?.[date] != null) row[sym] = allHistory[sym][date];
       }
@@ -336,26 +329,6 @@ function PEGChartTab({ portfolioSymbols }) {
 
   const toggleSymbol = (sym) => {
     setSelectedSymbols(p => p.includes(sym) ? p.filter(s => s !== sym) : [...p, sym]);
-  };
-
-  // Seed historical data using price history + current EPS growth as approximation
-  const seedHistory = async () => {
-    setSeeding(true);
-    const symsToSeed = portfolioSymbols.length ? portfolioSymbols : ["ASML", "TSM", "MU", "MRVL", "POWL", "CLS"];
-    let totalInserted = 0;
-    for (const sym of symsToSeed) {
-      setSeedProgress(`Seeding ${sym}…`);
-      const [full, prices] = await Promise.all([fetchFull(sym), fetchHistoricalPrices(sym, 120)]);
-      if (full && prices.length && full.pe && full.currentEpsGrowth) {
-        const n = await db.seedHistory(sym, prices, full.currentEpsGrowth, full.pe, full.price);
-        totalInserted += n;
-        // Also save today's snapshot
-        if (full.peg) await db.savePegSnapshot(sym, full.peg, full.pe, full.price, full.epsGrowth).catch(() => {});
-      }
-    }
-    setSeedProgress("");
-    setSeeding(false);
-    await loadHistory();
   };
 
   const CustomTooltip = ({ active, payload, label }) => {
@@ -394,20 +367,13 @@ function PEGChartTab({ portfolioSymbols }) {
             })}
           </div>
         </div>
-        <div style={{ display: "flex", gap: 8 }}>
-          <button onClick={loadHistory} disabled={loading}
-            style={{ background: "#0a0a0a", border: "1px solid #1e1e1e", borderRadius: 8, color: loading ? "#2a2a2a" : "#555", padding: "7px 13px", cursor: "pointer", display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}>
-            {loading ? <Spinner/> : <Icon name="refresh" size={13}/>} Refresh
-          </button>
-          <button onClick={seedHistory} disabled={seeding}
-            style={{ background: seeding ? "#0a0a0a" : "#0d1a14", border: "1px solid #00e5a033", borderRadius: 8, color: seeding ? "#2a2a2a" : "#00e5a0", padding: "7px 14px", cursor: seeding ? "not-allowed" : "pointer", display: "flex", alignItems: "center", gap: 6, fontSize: 12, fontWeight: 600 }}>
-            {seeding ? <Spinner/> : <Icon name="seed" size={13}/>}
-            {seeding ? seedProgress || "Seeding…" : "Seed 120d history"}
-          </button>
-        </div>
+        <button onClick={loadHistory} disabled={loading}
+          style={{ background: "#0a0a0a", border: "1px solid #1e1e1e", borderRadius: 8, color: loading ? "#2a2a2a" : "#555", padding: "7px 13px", cursor: "pointer", display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}>
+          {loading ? <Spinner/> : <Icon name="refresh" size={13}/>} Refresh
+        </button>
       </div>
 
-      {/* Legend: PEG zones */}
+      {/* Legend */}
       <div style={{ display: "flex", gap: 16, marginBottom: 20, flexWrap: "wrap" }}>
         {[["< 0.8", "#00e5a0", "Undervalued"], ["0.8–1.5", "#f5c842", "Fair value"], ["> 1.5", "#ff6b6b", "Expensive"]].map(([range, color, label]) => (
           <div key={range} style={{ display: "flex", alignItems: "center", gap: 6 }}>
@@ -421,33 +387,25 @@ function PEGChartTab({ portfolioSymbols }) {
         <div style={{ display: "flex", alignItems: "center", gap: 10, color: "#333", fontFamily: "monospace", padding: "40px 0" }}><Spinner/> Loading history…</div>
       ) : !hasData ? (
         <div style={{ background: "#070707", borderRadius: 12, border: "1px solid #141414", padding: 60, textAlign: "center" }}>
-          <div style={{ fontSize: 28, marginBottom: 12 }}>📈</div>
-          <div style={{ color: "#2a2a2a", fontFamily: "monospace", marginBottom: 16 }}>No PEG history yet</div>
-          <div style={{ color: "#444", fontSize: 12, marginBottom: 20 }}>
-            Two ways to get data:<br/>
-            <span style={{ color: "#555" }}>1. Scan daily — snapshots auto-save</span><br/>
-            <span style={{ color: "#555" }}>2. Click "Seed 120d history" for a bootstrapped estimate</span>
+          <div style={{ fontSize: 28, marginBottom: 16 }}>📈</div>
+          <div style={{ color: "#888", fontFamily: "monospace", fontSize: 14, marginBottom: 12 }}>Nog geen PEG history</div>
+          <div style={{ color: "#444", fontSize: 12, lineHeight: 1.8 }}>
+            De grafiek vult zich automatisch op via dagelijkse scans.<br/>
+            Elke keer dat je de Scanner gebruikt wordt een snapshot opgeslagen.<br/>
+            <span style={{ color: "#333" }}>Na een paar scans verschijnen hier betrouwbare trendlijnen.</span>
           </div>
-          <button onClick={seedHistory} disabled={seeding}
-            style={{ background: "#0d1a14", border: "1px solid #00e5a044", borderRadius: 8, color: "#00e5a0", padding: "10px 20px", cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 8, fontSize: 13, fontWeight: 600 }}>
-            {seeding ? <Spinner/> : <Icon name="seed" size={14}/>}
-            {seeding ? seedProgress : "Seed 120 days of history"}
-          </button>
-          <div style={{ color: "#2a2a2a", fontSize: 11, marginTop: 12 }}>Uses current EPS growth as proxy for historical PEG estimate</div>
         </div>
       ) : (
         <>
-          {/* Main chart */}
           <div style={{ background: "#070707", borderRadius: 12, border: "1px solid #141414", padding: "24px 20px 16px", marginBottom: 16 }}>
             <div style={{ fontSize: 11, color: "#333", marginBottom: 16, fontFamily: "monospace" }}>
-              PEG ratio over time · {chartData.length} data points
+              PEG ratio over time · {chartData.length} datapunten · groeit bij elke scan
             </div>
             <ResponsiveContainer width="100%" height={340}>
               <LineChart data={chartData} margin={{ top: 4, right: 16, left: -10, bottom: 0 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#111" vertical={false}/>
                 <XAxis dataKey="date" tick={{ fill: "#333", fontSize: 10, fontFamily: "monospace" }} tickLine={false} axisLine={false} interval="preserveStartEnd"/>
                 <YAxis tick={{ fill: "#333", fontSize: 10, fontFamily: "monospace" }} tickLine={false} axisLine={false} domain={[0, "auto"]}/>
-                {/* PEG zone bands */}
                 <ReferenceLine y={0.8} stroke="#00e5a0" strokeDasharray="4 4" strokeOpacity={0.3}/>
                 <ReferenceLine y={1.5} stroke="#f5c842" strokeDasharray="4 4" strokeOpacity={0.3}/>
                 <Tooltip content={<CustomTooltip/>}/>
@@ -462,7 +420,6 @@ function PEGChartTab({ portfolioSymbols }) {
             </ResponsiveContainer>
           </div>
 
-          {/* Per-symbol current PEG summary */}
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(160px, 1fr))", gap: 10 }}>
             {selectedSymbols.map(sym => {
               const history = allHistory[sym] ? Object.entries(allHistory[sym]).sort() : [];
@@ -476,13 +433,13 @@ function PEGChartTab({ portfolioSymbols }) {
                 <div key={sym} style={{ background: "#070707", border: `1px solid ${color}22`, borderRadius: 10, padding: "12px 14px" }}>
                   <div style={{ fontFamily: "monospace", fontWeight: 700, fontSize: 13, color, marginBottom: 6 }}>{sym}</div>
                   <div style={{ fontFamily: "monospace", fontSize: 20, fontWeight: 700, color: pegColor(currentPeg) }}>{fmt.num(currentPeg)}</div>
-                  <div style={{ fontSize: 10, color: "#444", marginTop: 2 }}>Current PEG</div>
+                  <div style={{ fontSize: 10, color: "#444", marginTop: 2 }}>Huidige PEG</div>
                   {delta != null && (
                     <div style={{ fontSize: 11, color: delta > 0 ? "#ff6b6b" : "#00e5a0", marginTop: 6, fontFamily: "monospace" }}>
                       {delta > 0 ? "▲" : "▼"} {Math.abs(delta).toFixed(2)} since start
                     </div>
                   )}
-                  <div style={{ fontSize: 10, color: "#2a2a2a", marginTop: 2 }}>{history.length} data points</div>
+                  <div style={{ fontSize: 10, color: "#2a2a2a", marginTop: 2 }}>{history.length} snapshots</div>
                 </div>
               );
             })}
