@@ -759,29 +759,59 @@ function ShortlistTab({ shortlist, setShortlist }) {
 
 // ── Portfolio ─────────────────────────────────────────────────────────────────
 const DEFAULT_POSITIONS = [
-  { symbol: "ASML", shares: 10, avgCost: 680, thesis: "Core holding — insider visibility on tool demand" },
-  { symbol: "TSM", shares: 20, avgCost: 150, thesis: "Foundry monopoly, AI wafer ramp thesis" },
-  { symbol: "MU", shares: 30, avgCost: 95, thesis: "HBM supercycle, best value pick" },
-  { symbol: "MRVL", shares: 40, avgCost: 65, thesis: "NVIDIA NVLink Fusion — re-rating event" },
-  { symbol: "POWL", shares: 15, avgCost: 200, thesis: "Data center power infrastructure" },
-  { symbol: "CLS", shares: 25, avgCost: 55, thesis: "AI infrastructure buildout" },
+  { symbol: "TSM",  shares: 90,  avgCost: 229.997, thesis: "Foundry monopoly — AI wafer ramp thesis" },
+  { symbol: "BAC",  shares: 128, avgCost: 52.425,  thesis: "Bank of America — interest rate play" },
+  { symbol: "CLS",  shares: 8,   avgCost: 270.41,  thesis: "Celestica — AI infrastructure buildout" },
+  { symbol: "LLY",  shares: 6,   avgCost: 899.995, thesis: "Eli Lilly — GLP-1 & obesity drug leader" },
+  { symbol: "MRVL", shares: 152, avgCost: 77.715,  thesis: "Marvell — NVIDIA NVLink Fusion re-rating" },
+  { symbol: "MU",   shares: 43,  avgCost: 411.090, thesis: "Micron — HBM supercycle, best value pick" },
+  { symbol: "POWL", shares: 6,   avgCost: 175.562, thesis: "Powell Industries — data center power" },
 ];
 
 function PortfolioTab({ positions, setPositions }) {
   const [quotes, setQuotes] = useState({});
+  const [fundamentals, setFundamentals] = useState({});
   const [loading, setLoading] = useState(false);
   const [adding, setAdding] = useState(false);
   const [form, setForm] = useState({ symbol: "", shares: "", avgCost: "", thesis: "" });
+  const [advice, setAdvice] = useState(null);
+  const [loadingAdvice, setLoadingAdvice] = useState(false);
 
   const refresh = async () => {
     setLoading(true);
-    const out = {};
+    const qOut = {};
+    const fOut = {};
     for (const p of positions) {
       const data = await yahooQuote(p.symbol);
       const meta = data?.chart?.result?.[0]?.meta;
-      if (meta) out[p.symbol] = { price: meta.regularMarketPrice };
+      if (meta) qOut[p.symbol] = {
+        price: meta.regularMarketPrice,
+        week52High: meta.fiftyTwoWeekHigh,
+        week52Low: meta.fiftyTwoWeekLow,
+      };
+      // Get fundamentals for rebalancing analysis
+      try {
+        const sd = await yahooSummary(p.symbol);
+        const fin = sd?.quoteSummary?.result?.[0];
+        const fd = fin?.financialData || {};
+        const ks = fin?.defaultKeyStatistics || {};
+        const sdet = fin?.summaryDetail || {};
+        fOut[p.symbol] = {
+          forwardPE: sdet.forwardPE?.raw || ks.forwardPE?.raw,
+          trailingPE: sdet.trailingPE?.raw,
+          earningsGrowth: fd.earningsGrowth?.raw,
+          forwardEps: ks.forwardEps?.raw,
+          trailingEps: ks.trailingEps?.raw,
+          targetMeanPrice: fd.targetMeanPrice?.raw,
+          recommendation: fd.recommendationKey,
+          grossMargins: fd.grossMargins?.raw,
+          revenueGrowth: fd.revenueGrowth?.raw,
+        };
+      } catch {}
     }
-    setQuotes(out); setLoading(false);
+    setQuotes(qOut);
+    setFundamentals(fOut);
+    setLoading(false);
   };
 
   useEffect(() => { if (positions.length) refresh(); }, [positions.length]);
@@ -801,8 +831,97 @@ function PortfolioTab({ positions, setPositions }) {
   const pnl = totalValue - totalCost;
   const ret = totalCost ? (pnl / totalCost) * 100 : 0;
 
+  // Generate rebalancing advice using Claude API
+  const getRebalancingAdvice = async () => {
+    setLoadingAdvice(true);
+    setAdvice(null);
+
+    // Build portfolio summary for AI
+    const portfolioData = positions.map(p => {
+      const q = quotes[p.symbol];
+      const f = fundamentals[p.symbol];
+      const price = q?.price || p.avgCost;
+      const value = p.shares * price;
+      const gainPct = ((price - p.avgCost) / p.avgCost) * 100;
+      const weight = (value / totalValue) * 100;
+
+      // Calculate PEG
+      const fwdGrowth = f?.trailingEps && f?.forwardEps && f.trailingEps > 0
+        ? (f.forwardEps - f.trailingEps) / Math.abs(f.trailingEps) : null;
+      const ttmGrowth = f?.earningsGrowth;
+      const growthRaw = fwdGrowth && fwdGrowth > 0 && fwdGrowth <= 1.0 ? fwdGrowth
+        : ttmGrowth && ttmGrowth > 0 ? ttmGrowth
+        : fwdGrowth && fwdGrowth > 1.0 ? Math.sqrt(fwdGrowth) : null;
+      const pe = f?.trailingPE && f.trailingPE < 150 ? f.trailingPE : f?.forwardPE;
+      const peg = pe && growthRaw ? pe / (growthRaw * 100) : null;
+      const upside = f?.targetMeanPrice && price ? ((f.targetMeanPrice - price) / price) * 100 : null;
+
+      return {
+        symbol: p.symbol,
+        thesis: p.thesis,
+        shares: p.shares,
+        avgCost: p.avgCost,
+        currentPrice: price?.toFixed(2),
+        gainLossPct: gainPct?.toFixed(1),
+        portfolioWeight: weight?.toFixed(1),
+        forwardPE: f?.forwardPE?.toFixed(1),
+        peg: peg?.toFixed(2),
+        analystUpside: upside?.toFixed(1),
+        analystRec: f?.recommendation,
+        revenueGrowth: f?.revenueGrowth ? (f.revenueGrowth * 100).toFixed(1) : null,
+      };
+    });
+
+    const prompt = `You are a rational, unemotional investment analyst. Here is my current stock portfolio:
+
+${JSON.stringify(portfolioData, null, 2)}
+
+Total portfolio value: $${totalValue.toFixed(0)}
+Total return: ${ret.toFixed(1)}%
+
+Analyze this portfolio and provide specific rebalancing recommendations. For each stock, assess:
+1. Is it overvalued based on PEG and forward P/E?
+2. Is it undervalued with strong analyst upside?
+3. What is the portfolio concentration risk?
+
+Then give 2-4 specific, actionable recommendations such as:
+- "Trim POWL by 50% (currently +192% gain, high forward P/E) and add to MU (analyst upside +X%)"
+- "MRVL weight is too high at X% — consider reducing"
+
+Be direct, specific, and numbers-driven. No emotional language. Format as JSON with this structure:
+{
+  "summary": "one sentence portfolio assessment",
+  "signals": [{"symbol": "X", "signal": "TRIM|HOLD|ADD", "reason": "...", "action": "specific action"}],
+  "rebalance": [{"from": "SYMBOL", "to": "SYMBOL", "rationale": "...", "urgency": "high|medium|low"}]
+}`;
+
+    try {
+      const response = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "claude-sonnet-4-20250514",
+          max_tokens: 1000,
+          messages: [{ role: "user", content: prompt }],
+        }),
+      });
+      const data = await response.json();
+      const text = data.content?.find(b => b.type === "text")?.text || "";
+      const clean = text.replace(/```json|```/g, "").trim();
+      const parsed = JSON.parse(clean);
+      setAdvice(parsed);
+    } catch (e) {
+      setAdvice({ error: "Could not generate analysis. Try again." });
+    }
+    setLoadingAdvice(false);
+  };
+
+  const signalColor = { "TRIM": "#ff6b6b", "HOLD": "#f5c842", "ADD": "#00e5a0" };
+  const urgencyColor = { "high": "#ff6b6b", "medium": "#f5c842", "low": "#555" };
+
   return (
     <div>
+      {/* Summary cards */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 10, marginBottom: 22 }}>
         {[["Value", `$${totalValue.toFixed(0)}`, totalValue >= totalCost ? "#00e5a0" : "#ff6b6b"],
           ["Cost Basis", `$${totalCost.toFixed(0)}`, "#555"],
@@ -814,17 +933,80 @@ function PortfolioTab({ positions, setPositions }) {
           </div>
         ))}
       </div>
+
+      {/* Controls */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 13 }}>
-        <span style={{ color: "#444", fontSize: 12, fontFamily: "monospace" }}>{positions.length} positions · Supabase</span>
+        <span style={{ color: "#444", fontSize: 12, fontFamily: "monospace" }}>{positions.length} positions · DEGIRO</span>
         <div style={{ display: "flex", gap: 8 }}>
           <button onClick={refresh} disabled={loading} style={{ background: "#0a0a0a", border: "1px solid #1e1e1e", borderRadius: 8, color: loading ? "#2a2a2a" : "#555", padding: "7px 12px", cursor: "pointer", display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}>
             {loading ? <Spinner/> : <Icon name="refresh" size={13}/>} Refresh
+          </button>
+          <button onClick={getRebalancingAdvice} disabled={loadingAdvice || loading || !Object.keys(quotes).length}
+            style={{ background: loadingAdvice ? "#0a0a0a" : "#0d1a14", border: "1px solid #00e5a033", borderRadius: 8, color: loadingAdvice ? "#2a2a2a" : "#00e5a0", padding: "7px 14px", cursor: "pointer", display: "flex", alignItems: "center", gap: 6, fontSize: 12, fontWeight: 600 }}>
+            {loadingAdvice ? <Spinner/> : "✦"} {loadingAdvice ? "Analyzing…" : "AI Rebalance"}
           </button>
           <button onClick={() => setAdding(true)} style={{ background: "#00e5a0", border: "none", borderRadius: 8, color: "#000", padding: "7px 14px", cursor: "pointer", display: "flex", alignItems: "center", gap: 6, fontSize: 12, fontWeight: 700 }}>
             <Icon name="plus" size={13}/> Position
           </button>
         </div>
       </div>
+
+      {/* AI Rebalancing advice */}
+      {advice && !advice.error && (
+        <div style={{ background: "#070707", border: "1px solid #00e5a022", borderRadius: 12, padding: "18px 20px", marginBottom: 16 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+            <div style={{ fontSize: 10, color: "#00e5a0", textTransform: "uppercase", letterSpacing: 1.2, fontWeight: 700 }}>✦ AI Rebalancing Analysis</div>
+            <button onClick={() => setAdvice(null)} style={{ background: "transparent", border: "none", color: "#333", cursor: "pointer", fontSize: 16 }}>×</button>
+          </div>
+          {advice.summary && (
+            <div style={{ fontSize: 13, color: "#888", marginBottom: 16, lineHeight: 1.6, fontStyle: "italic" }}>"{advice.summary}"</div>
+          )}
+          {/* Per-stock signals */}
+          {advice.signals?.length > 0 && (
+            <div style={{ marginBottom: 16 }}>
+              <div style={{ fontSize: 10, color: "#444", textTransform: "uppercase", letterSpacing: 1, marginBottom: 8 }}>Position signals</div>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                {advice.signals.map((s, i) => (
+                  <div key={i} style={{ background: "#0a0a0a", borderRadius: 8, padding: "10px 14px", border: `1px solid ${signalColor[s.signal] || "#222"}22`, flex: "1", minWidth: 200 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                      <span style={{ fontFamily: "monospace", fontWeight: 700, color: "#fff" }}>{s.symbol}</span>
+                      <span style={{ fontSize: 10, fontWeight: 700, color: signalColor[s.signal] || "#888", background: (signalColor[s.signal] || "#888") + "22", padding: "2px 7px", borderRadius: 4 }}>{s.signal}</span>
+                    </div>
+                    <div style={{ fontSize: 11, color: "#666", lineHeight: 1.5 }}>{s.reason}</div>
+                    {s.action && <div style={{ fontSize: 11, color: "#00e5a0", marginTop: 6, fontStyle: "italic" }}>→ {s.action}</div>}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+          {/* Rebalancing moves */}
+          {advice.rebalance?.length > 0 && (
+            <div>
+              <div style={{ fontSize: 10, color: "#444", textTransform: "uppercase", letterSpacing: 1, marginBottom: 8 }}>Suggested moves</div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                {advice.rebalance.map((r, i) => (
+                  <div key={i} style={{ display: "flex", alignItems: "flex-start", gap: 12, background: "#0a0a0a", borderRadius: 8, padding: "12px 14px" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 140 }}>
+                      <span style={{ fontFamily: "monospace", fontWeight: 700, color: "#ff6b6b", fontSize: 13 }}>{r.from}</span>
+                      <span style={{ color: "#333" }}>→</span>
+                      <span style={{ fontFamily: "monospace", fontWeight: 700, color: "#00e5a0", fontSize: 13 }}>{r.to}</span>
+                    </div>
+                    <div style={{ flex: 1, fontSize: 11, color: "#666", lineHeight: 1.5 }}>{r.rationale}</div>
+                    <div style={{ fontSize: 10, color: urgencyColor[r.urgency] || "#555", fontWeight: 700, textTransform: "uppercase", whiteSpace: "nowrap" }}>{r.urgency}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+          <div style={{ fontSize: 10, color: "#2a2a2a", marginTop: 14, fontStyle: "italic" }}>
+            This is data-driven analysis, not financial advice. Always verify before trading.
+          </div>
+        </div>
+      )}
+      {advice?.error && (
+        <div style={{ background: "#0a0a0a", border: "1px solid #ff6b6b22", borderRadius: 8, padding: "12px 16px", marginBottom: 13, fontSize: 12, color: "#ff6b6b" }}>{advice.error}</div>
+      )}
+
       {adding && (
         <div style={{ background: "#070707", border: "1px solid #1e1e1e", borderRadius: 12, padding: 16, marginBottom: 13 }}>
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end" }}>
@@ -840,10 +1022,12 @@ function PortfolioTab({ positions, setPositions }) {
           </div>
         </div>
       )}
+
+      {/* Position table */}
       <div style={{ background: "#070707", borderRadius: 12, border: "1px solid #141414", overflow: "hidden" }}>
-        <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr 1fr 1fr 1fr 1fr 60px", padding: "10px 20px", borderBottom: "1px solid #141414" }}>
-          {["Position", "Shares", "Avg $", "Price", "Value", "P&L", "Return", ""].map((h, i) => (
-            <div key={i} style={{ fontSize: 10, color: "#3a3a3a", fontWeight: 700, letterSpacing: 1.2, textTransform: "uppercase", fontFamily: "monospace", textAlign: i === 7 ? "right" : "left" }}>{h}</div>
+        <div style={{ display: "grid", gridTemplateColumns: "1.5fr 1fr 1fr 1fr 1fr 1fr 1fr 1fr 60px", padding: "10px 20px", borderBottom: "1px solid #141414" }}>
+          {["Position", "Shares", "Avg $", "Price", "Value", "P&L", "Return", "Weight", ""].map((h, i) => (
+            <div key={i} style={{ fontSize: 10, color: "#3a3a3a", fontWeight: 700, letterSpacing: 1.2, textTransform: "uppercase", fontFamily: "monospace", textAlign: i === 8 ? "right" : "left" }}>{h}</div>
           ))}
         </div>
         {positions.map(p => {
@@ -853,23 +1037,42 @@ function PortfolioTab({ positions, setPositions }) {
           const cost = p.shares * p.avgCost;
           const pl = value - cost;
           const rt = cost ? (pl / cost) * 100 : 0;
+          const weight = totalValue ? (value / totalValue) * 100 : 0;
+          const week52Pct = q?.week52High && q?.week52Low
+            ? ((price - q.week52Low) / (q.week52High - q.week52Low)) * 100 : null;
+
           return (
-            <div key={p.symbol} style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr 1fr 1fr 1fr 1fr 60px", padding: "13px 20px", borderBottom: "1px solid #0c0c0c", transition: "background 0.15s" }}
+            <div key={p.symbol} style={{ borderBottom: "1px solid #0c0c0c", transition: "background 0.15s" }}
               onMouseEnter={e => e.currentTarget.style.background = "#0b0b0b"}
               onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
-              <div>
-                <div style={{ fontFamily: "monospace", fontWeight: 700, fontSize: 13, color: "#e0e0e0" }}>{p.symbol}</div>
-                {p.thesis && <div style={{ fontSize: 10, color: "#3a3a3a", marginTop: 2, maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.thesis}</div>}
+              <div style={{ display: "grid", gridTemplateColumns: "1.5fr 1fr 1fr 1fr 1fr 1fr 1fr 1fr 60px", padding: "12px 20px" }}>
+                <div>
+                  <div style={{ fontFamily: "monospace", fontWeight: 700, fontSize: 13, color: "#e0e0e0" }}>{p.symbol}</div>
+                  {p.thesis && <div style={{ fontSize: 10, color: "#3a3a3a", marginTop: 2, maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.thesis}</div>}
+                </div>
+                <div style={{ fontFamily: "monospace", color: "#666", fontSize: 13 }}>{p.shares}</div>
+                <div style={{ fontFamily: "monospace", color: "#666", fontSize: 13 }}>{fmt.price(p.avgCost)}</div>
+                <div style={{ fontFamily: "monospace", color: "#d0d0d0", fontSize: 13 }}>{price ? fmt.price(price) : <Spinner/>}</div>
+                <div style={{ fontFamily: "monospace", color: "#888", fontSize: 13 }}>{value ? `$${value.toFixed(0)}` : "—"}</div>
+                <div style={{ fontFamily: "monospace", color: pl >= 0 ? "#00e5a0" : "#ff6b6b", fontSize: 13, fontWeight: 600 }}>{pl ? `${pl >= 0 ? "+" : ""}$${pl.toFixed(0)}` : "—"}</div>
+                <div style={{ fontFamily: "monospace", color: rt >= 0 ? "#00e5a0" : "#ff6b6b", fontSize: 13, fontWeight: 600 }}>{rt ? fmt.pct(rt) : "—"}</div>
+                <div style={{ fontFamily: "monospace", color: "#666", fontSize: 13 }}>{weight ? `${weight.toFixed(1)}%` : "—"}</div>
+                <div style={{ display: "flex", justifyContent: "flex-end" }}>
+                  <button onClick={() => remove(p.symbol)} style={{ background: "#111", border: "1px solid #1e1e1e", borderRadius: 6, color: "#444", padding: "5px 7px", cursor: "pointer" }}><Icon name="trash" size={12}/></button>
+                </div>
               </div>
-              <div style={{ fontFamily: "monospace", color: "#666", fontSize: 13 }}>{p.shares}</div>
-              <div style={{ fontFamily: "monospace", color: "#666", fontSize: 13 }}>{fmt.price(p.avgCost)}</div>
-              <div style={{ fontFamily: "monospace", color: "#d0d0d0", fontSize: 13 }}>{price ? fmt.price(price) : <Spinner/>}</div>
-              <div style={{ fontFamily: "monospace", color: "#888", fontSize: 13 }}>{value ? `$${value.toFixed(0)}` : "—"}</div>
-              <div style={{ fontFamily: "monospace", color: pl >= 0 ? "#00e5a0" : "#ff6b6b", fontSize: 13, fontWeight: 600 }}>{pl ? `${pl >= 0 ? "+" : ""}$${pl.toFixed(0)}` : "—"}</div>
-              <div style={{ fontFamily: "monospace", color: rt >= 0 ? "#00e5a0" : "#ff6b6b", fontSize: 13, fontWeight: 600 }}>{rt ? fmt.pct(rt) : "—"}</div>
-              <div style={{ display: "flex", justifyContent: "flex-end" }}>
-                <button onClick={() => remove(p.symbol)} style={{ background: "#111", border: "1px solid #1e1e1e", borderRadius: 6, color: "#444", padding: "5px 7px", cursor: "pointer" }}><Icon name="trash" size={12}/></button>
-              </div>
+              {/* 52-week mini bar */}
+              {week52Pct !== null && (
+                <div style={{ padding: "0 20px 10px", display: "flex", alignItems: "center", gap: 8 }}>
+                  <span style={{ fontSize: 9, color: "#2a2a2a", fontFamily: "monospace", whiteSpace: "nowrap" }}>52W LOW</span>
+                  <div style={{ flex: 1, height: 3, background: "#111", borderRadius: 2, position: "relative" }}>
+                    <div style={{ width: `${week52Pct}%`, height: "100%", background: week52Pct < 30 ? "#00e5a0" : week52Pct < 70 ? "#f5c842" : "#ff6b6b", borderRadius: 2 }}/>
+                    <div style={{ position: "absolute", left: `${week52Pct}%`, top: -2, width: 2, height: 7, background: "#fff", transform: "translateX(-50%)", borderRadius: 1 }}/>
+                  </div>
+                  <span style={{ fontSize: 9, color: "#2a2a2a", fontFamily: "monospace", whiteSpace: "nowrap" }}>52W HIGH</span>
+                  <span style={{ fontSize: 9, color: week52Pct < 30 ? "#00e5a0" : week52Pct < 70 ? "#f5c842" : "#ff6b6b", fontFamily: "monospace", whiteSpace: "nowrap" }}>{week52Pct.toFixed(0)}%</span>
+                </div>
+              )}
             </div>
           );
         })}
