@@ -789,6 +789,81 @@ function PortfolioTab({ positions, setPositions }) {
   const [form, setForm] = useState({ symbol: "", shares: "", avgCost: "", thesis: "" });
   const [advice, setAdvice] = useState(null);
   const [loadingAdvice, setLoadingAdvice] = useState(false);
+  const [cashAmount, setCashAmount] = useState("");
+  const [cashAdvice, setCashAdvice] = useState(null);
+  const [loadingCash, setLoadingCash] = useState(false);
+
+  const buildPortfolioData = () => positions.map(p => {
+    const q = quotes[p.symbol];
+    const f = fundamentals[p.symbol];
+    const price = q?.price || p.avgCost;
+    const value = p.shares * price;
+    const gainPct = ((price - p.avgCost) / p.avgCost) * 100;
+    const weight = (value / totalValue) * 100;
+    const fwdGrowth = f?.trailingEps && f?.forwardEps && f.trailingEps > 0
+      ? (f.forwardEps - f.trailingEps) / Math.abs(f.trailingEps) : null;
+    const ttmGrowth = f?.earningsGrowth;
+    const growthRaw = fwdGrowth && fwdGrowth > 0 && fwdGrowth <= 1.0 ? fwdGrowth
+      : ttmGrowth && ttmGrowth > 0 ? ttmGrowth
+      : fwdGrowth && fwdGrowth > 1.0 ? Math.sqrt(fwdGrowth) : null;
+    const pe = f?.trailingPE && f.trailingPE < 150 ? f.trailingPE : f?.forwardPE;
+    const peg = pe && growthRaw ? pe / (growthRaw * 100) : null;
+    const upside = f?.targetMeanPrice && price ? ((f.targetMeanPrice - price) / price) * 100 : null;
+    return {
+      symbol: p.symbol, thesis: p.thesis, shares: p.shares,
+      avgCost: p.avgCost, currentPrice: price?.toFixed(2),
+      gainLossPct: gainPct?.toFixed(1), portfolioWeight: weight?.toFixed(1),
+      forwardPE: f?.forwardPE?.toFixed(1), peg: peg?.toFixed(2),
+      analystUpside: upside?.toFixed(1), analystRec: f?.recommendation,
+      revenueGrowth: f?.revenueGrowth ? (f.revenueGrowth * 100).toFixed(1) : null,
+    };
+  });
+
+  const getCashAdvice = async () => {
+    const amount = parseFloat(cashAmount);
+    if (!amount || amount <= 0) return;
+    setLoadingCash(true);
+    setCashAdvice(null);
+    const portfolioData = buildPortfolioData();
+    const prompt = `You are a rational, long-term investment analyst. A portfolio investor wants to deploy $${amount.toFixed(0)} of new cash.
+
+CURRENT PORTFOLIO (total value $${totalValue.toFixed(0)}):
+${portfolioData.map(p => `${p.symbol}: weight ${p.portfolioWeight}%, fwdPE ${p.forwardPE}, PEG ${p.peg}, analyst upside ${p.analystUpside}%, rec ${p.analystRec}, thesis: ${p.thesis}`).join('\n')}
+
+NEW CASH TO DEPLOY: $${amount.toFixed(0)} (${((amount / totalValue) * 100).toFixed(1)}% of portfolio)
+
+Rules for cash deployment:
+- Prefer positions with lowest PEG and highest analyst upside
+- Avoid adding to positions already >25% of portfolio
+- Prefer positions where adding cash reduces concentration risk
+- Suggest splitting across 1-3 positions max — don't over-diversify
+- Be specific: how many shares to buy at current price for each recommendation
+- Each DEGIRO trade costs ~€4, so minimum allocation per position should be meaningful (>$500)
+
+Return ONLY valid JSON:
+{"summary":"one sentence on deployment strategy","allocations":[{"symbol":"X","amount":1234,"shares":5,"rationale":"brief reason","conviction":"high or medium"}]}`;
+
+    try {
+      const response = await fetch("/api/analyze", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "claude-sonnet-4-5",
+          max_tokens: 4000,
+          messages: [{ role: "user", content: prompt }],
+        }),
+      });
+      const data = await response.json();
+      if (data.error) throw new Error(data.error.message || JSON.stringify(data.error));
+      const text = data.content?.find(b => b.type === "text")?.text || "";
+      const clean = text.replace(/```json|```/g, "").trim();
+      setCashAdvice(JSON.parse(clean));
+    } catch (e) {
+      console.error("Cash advice error:", e);
+      setCashAdvice({ error: `Analysis failed: ${e.message}` });
+    }
+    setLoadingCash(false);
+  };
 
   const refresh = async () => {
     setLoading(true);
@@ -844,46 +919,10 @@ function PortfolioTab({ positions, setPositions }) {
   const pnl = totalValue - totalCost;
   const ret = totalCost ? (pnl / totalCost) * 100 : 0;
 
-  // Generate rebalancing advice using Claude API
   const getRebalancingAdvice = async () => {
     setLoadingAdvice(true);
     setAdvice(null);
-
-    // Build portfolio summary for AI
-    const portfolioData = positions.map(p => {
-      const q = quotes[p.symbol];
-      const f = fundamentals[p.symbol];
-      const price = q?.price || p.avgCost;
-      const value = p.shares * price;
-      const gainPct = ((price - p.avgCost) / p.avgCost) * 100;
-      const weight = (value / totalValue) * 100;
-
-      // Calculate PEG
-      const fwdGrowth = f?.trailingEps && f?.forwardEps && f.trailingEps > 0
-        ? (f.forwardEps - f.trailingEps) / Math.abs(f.trailingEps) : null;
-      const ttmGrowth = f?.earningsGrowth;
-      const growthRaw = fwdGrowth && fwdGrowth > 0 && fwdGrowth <= 1.0 ? fwdGrowth
-        : ttmGrowth && ttmGrowth > 0 ? ttmGrowth
-        : fwdGrowth && fwdGrowth > 1.0 ? Math.sqrt(fwdGrowth) : null;
-      const pe = f?.trailingPE && f.trailingPE < 150 ? f.trailingPE : f?.forwardPE;
-      const peg = pe && growthRaw ? pe / (growthRaw * 100) : null;
-      const upside = f?.targetMeanPrice && price ? ((f.targetMeanPrice - price) / price) * 100 : null;
-
-      return {
-        symbol: p.symbol,
-        thesis: p.thesis,
-        shares: p.shares,
-        avgCost: p.avgCost,
-        currentPrice: price?.toFixed(2),
-        gainLossPct: gainPct?.toFixed(1),
-        portfolioWeight: weight?.toFixed(1),
-        forwardPE: f?.forwardPE?.toFixed(1),
-        peg: peg?.toFixed(2),
-        analystUpside: upside?.toFixed(1),
-        analystRec: f?.recommendation,
-        revenueGrowth: f?.revenueGrowth ? (f.revenueGrowth * 100).toFixed(1) : null,
-      };
-    });
+    const portfolioData = buildPortfolioData();
 
     const prompt = `You are a rational, long-term investment analyst. Your primary rule: DO NOT TRADE unless there is a compelling, data-driven reason. Over-trading destroys returns through taxes, spreads, and timing mistakes.
 
@@ -942,9 +981,9 @@ Return ONLY valid JSON, no other text:
       </div>
 
       {/* Controls */}
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 13 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 13, flexWrap: "wrap", gap: 8 }}>
         <span style={{ color: "#444", fontSize: 12, fontFamily: "monospace" }}>{positions.length} positions · DEGIRO</span>
-        <div style={{ display: "flex", gap: 8 }}>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
           <button onClick={refresh} disabled={loading} style={{ background: "#0a0a0a", border: "1px solid #1e1e1e", borderRadius: 8, color: loading ? "#2a2a2a" : "#555", padding: "7px 12px", cursor: "pointer", display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}>
             {loading ? <Spinner/> : <Icon name="refresh" size={13}/>} Refresh
           </button>
@@ -952,11 +991,73 @@ Return ONLY valid JSON, no other text:
             style={{ background: loadingAdvice ? "#0a0a0a" : "#0d1a14", border: "1px solid #00e5a033", borderRadius: 8, color: loadingAdvice ? "#2a2a2a" : "#00e5a0", padding: "7px 14px", cursor: "pointer", display: "flex", alignItems: "center", gap: 6, fontSize: 12, fontWeight: 600 }}>
             {loadingAdvice ? <Spinner/> : "✦"} {loadingAdvice ? "Analyzing…" : "AI Rebalance"}
           </button>
+          {/* Cash deployment */}
+          <div style={{ display: "flex", alignItems: "center", gap: 6, background: "#0a0a0a", border: "1px solid #1a2a1a", borderRadius: 8, padding: "4px 4px 4px 12px" }}>
+            <span style={{ fontSize: 11, color: "#555", whiteSpace: "nowrap" }}>Deploy $</span>
+            <input
+              type="number"
+              value={cashAmount}
+              onChange={e => setCashAmount(e.target.value)}
+              placeholder="1000"
+              style={{ width: 75, background: "transparent", border: "none", color: "#d0d0d0", fontSize: 13, fontFamily: "monospace", outline: "none" }}
+            />
+            <button onClick={getCashAdvice} disabled={loadingCash || loading || !Object.keys(quotes).length || !cashAmount}
+              style={{ background: loadingCash ? "#111" : "#00e5a0", border: "none", borderRadius: 6, color: loadingCash ? "#333" : "#000", padding: "6px 12px", cursor: "pointer", fontSize: 12, fontWeight: 700, whiteSpace: "nowrap" }}>
+              {loadingCash ? <Spinner/> : "→ Allocate"}
+            </button>
+          </div>
           <button onClick={() => setAdding(true)} style={{ background: "#00e5a0", border: "none", borderRadius: 8, color: "#000", padding: "7px 14px", cursor: "pointer", display: "flex", alignItems: "center", gap: 6, fontSize: 12, fontWeight: 700 }}>
             <Icon name="plus" size={13}/> Position
           </button>
         </div>
       </div>
+
+      {/* Cash deployment advice */}
+      {cashAdvice && !cashAdvice.error && (
+        <div style={{ background: "#070707", border: "1px solid #00e5a033", borderRadius: 12, padding: "18px 20px", marginBottom: 16 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+            <div style={{ fontSize: 10, color: "#00e5a0", textTransform: "uppercase", letterSpacing: 1.2, fontWeight: 700 }}>💵 Deploy ${parseFloat(cashAmount).toFixed(0)} — AI Allocation</div>
+            <button onClick={() => setCashAdvice(null)} style={{ background: "transparent", border: "none", color: "#333", cursor: "pointer", fontSize: 16 }}>×</button>
+          </div>
+          {cashAdvice.summary && (
+            <div style={{ fontSize: 13, color: "#888", marginBottom: 16, lineHeight: 1.6, fontStyle: "italic" }}>"{cashAdvice.summary}"</div>
+          )}
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {cashAdvice.allocations?.map((a, i) => {
+              const q = quotes[a.symbol];
+              const price = q?.price;
+              const newWeight = totalValue > 0 ? (((positions.find(p => p.symbol === a.symbol)?.shares || 0) * (price || 0) + a.amount) / (totalValue + parseFloat(cashAmount))) * 100 : 0;
+              return (
+                <div key={i} style={{ display: "grid", gridTemplateColumns: "80px 100px 100px 1fr 80px", alignItems: "center", gap: 12, background: "#0a0a0a", borderRadius: 8, padding: "12px 16px", border: `1px solid ${a.conviction === "high" ? "#00e5a033" : "#1a1a1a"}` }}>
+                  <div style={{ fontFamily: "monospace", fontWeight: 700, fontSize: 15, color: "#fff" }}>{a.symbol}</div>
+                  <div>
+                    <div style={{ fontFamily: "monospace", fontWeight: 700, color: "#00e5a0", fontSize: 14 }}>${a.amount?.toLocaleString()}</div>
+                    <div style={{ fontSize: 10, color: "#444", marginTop: 2 }}>{a.shares} shares @ {price ? `$${price.toFixed(2)}` : "—"}</div>
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 10, color: "#444", marginBottom: 2 }}>New weight</div>
+                    <div style={{ fontFamily: "monospace", fontSize: 13, color: "#888" }}>{newWeight.toFixed(1)}%</div>
+                  </div>
+                  <div style={{ fontSize: 11, color: "#666", lineHeight: 1.5 }}>{a.rationale}</div>
+                  <div style={{ textAlign: "right" }}>
+                    <span style={{ fontSize: 10, fontWeight: 700, color: a.conviction === "high" ? "#00e5a0" : "#f5c842", textTransform: "uppercase" }}>{a.conviction}</span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+          {/* Total check */}
+          {cashAdvice.allocations && (
+            <div style={{ marginTop: 12, fontSize: 11, color: "#444", display: "flex", justifyContent: "space-between" }}>
+              <span>Total allocated: ${cashAdvice.allocations.reduce((s, a) => s + (a.amount || 0), 0).toLocaleString()}</span>
+              <span style={{ color: "#2a2a2a", fontStyle: "italic" }}>Not financial advice — verify before trading</span>
+            </div>
+          )}
+        </div>
+      )}
+      {cashAdvice?.error && (
+        <div style={{ background: "#0a0a0a", border: "1px solid #ff6b6b22", borderRadius: 8, padding: "12px 16px", marginBottom: 13, fontSize: 12, color: "#ff6b6b" }}>{cashAdvice.error}</div>
+      )}
 
       {/* AI Rebalancing advice */}
       {advice && !advice.error && (
