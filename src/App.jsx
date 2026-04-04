@@ -59,67 +59,87 @@ async function fetchFull(symbol) {
   const sd = fin?.summaryDetail || {};
   const ap = fin?.assetProfile || {};
 
-  // ── EPS groei: meerdere bronnen, beste keuze ─────────────────────────────
+  // ── PEG: verfijnde multi-source berekening ───────────────────────────────
   const trailingEps = ks.trailingEps?.raw || null;
   const forwardEps = ks.forwardEps?.raw || null;
+  const forwardPE = sd.forwardPE?.raw || ks.forwardPE?.raw || null;
+  const trailingPE = sd.trailingPE?.raw || ks.trailingPE?.raw || null;
 
-  // Forward EPS groei (1jr) — betrouwbaar maar kan extreem zijn bij cyclicals
+  // Forward EPS groei (1 jaar)
   const forwardGrowth = trailingEps && forwardEps && trailingEps > 0
     ? (forwardEps - trailingEps) / Math.abs(trailingEps)
     : null;
 
   // TTM earnings growth (YoY actuals)
   const ttmGrowth = fd.earningsGrowth?.raw || null;
-
-  // Quarterly growth
   const qtrGrowth = ks.earningsQuarterlyGrowth?.raw || null;
-
-  // Revenue growth als fallback
   const revGrowth = fd.revenueGrowth?.raw || null;
 
-  // Kies beste bron — maar cap extreme waarden (>100% is niet representatief voor PEG)
-  // Bij cyclicals zoals MU is forward 1jr groei misleidend hoog
-  let epsGrowthRaw, pegSource;
+  // Kies beste groeivoet — cap extreme cyclical pieken
+  let epsGrowthRaw, pegSource, growthUsed;
 
   if (forwardGrowth !== null && forwardGrowth > 0 && forwardGrowth <= 1.0) {
-    // Forward groei ≤100%: betrouwbaar en representatief
     epsGrowthRaw = forwardGrowth;
     pegSource = "fwd";
+    growthUsed = "1yr forward";
   } else if (ttmGrowth !== null && ttmGrowth > 0 && ttmGrowth <= 2.0) {
-    // TTM groei ≤200%: gebruik actuele groei
     epsGrowthRaw = ttmGrowth;
     pegSource = "ttm";
+    growthUsed = "TTM actuals";
   } else if (forwardGrowth !== null && forwardGrowth > 1.0) {
-    // Forward groei >100% (cyclical piek): gebruik √(forward) als proxy voor normalisatie
-    // Dit geeft een conservatievere maar realistischere groeivoet
+    // Cyclical piek: √(forward) normaliseert de éénjarige explosie
     epsGrowthRaw = Math.sqrt(forwardGrowth);
     pegSource = "fwd↓";
+    growthUsed = "forward (normalized)";
   } else if (qtrGrowth !== null && qtrGrowth > 0) {
     epsGrowthRaw = Math.min(qtrGrowth, 2.0);
     pegSource = "qtr";
+    growthUsed = "quarterly";
   } else {
     epsGrowthRaw = revGrowth || 0;
     pegSource = "rev";
+    growthUsed = "revenue (fallback)";
   }
 
   const epsGrowthPct = epsGrowthRaw * 100;
-  const pe = sd.trailingPE?.raw || ks.trailingPE?.raw || null;
-  // Gebruik forward P/E als trailing P/E ontbreekt of >100 (distorted)
-  const forwardPE = sd.forwardPE?.raw || ks.forwardPE?.raw || null;
-  const effectivePE = (pe && pe < 150) ? pe : forwardPE;
-  const peg = effectivePE && epsGrowthPct > 0 ? effectivePE / epsGrowthPct : null;
 
+  // Gebruik forward P/E als trailing P/E ontbreekt of >150 (distorted door laag basisjaar)
+  // Voor cyclicals: forward P/E is eerlijker dan trailing
+  const effectivePE = (trailingPE && trailingPE > 0 && trailingPE < 150) ? trailingPE : forwardPE;
+  const pegPE = (trailingPE && trailingPE > 0 && trailingPE < 150) ? trailingPE : forwardPE;
+  const peg = pegPE && epsGrowthPct > 0 ? pegPE / epsGrowthPct : null;
+
+  // ── Winstgevendheid & cashflow ────────────────────────────────────────────
   const grossMargin = (fd.grossMargins?.raw || 0) * 100;
-  const roic = (fd.returnOnEquity?.raw || 0) * 100;
-  const revenueGrowth = (fd.revenueGrowth?.raw || 0) * 100;
+  const operatingMargin = (fd.operatingMargins?.raw || 0) * 100;
+  const roic = (fd.returnOnEquity?.raw || 0) * 100; // ROE als ROIC proxy
 
-  // Net Debt / EBITDA
+  // FCF Margin = Free Cash Flow / Revenue
+  const fcf = fd.freeCashflow?.raw || null;
+  const revenue = fd.totalRevenue?.raw || null;
+  const fcfMargin = fcf && revenue ? (fcf / revenue) * 100 : null;
+
+  // FCF Yield = FCF per share / prijs
+  const sharesOut = ks.sharesOutstanding?.raw || null;
+  const fcfPerShare = fcf && sharesOut ? fcf / sharesOut : null;
+  const fcfYield = fcfPerShare && price ? (fcfPerShare / price) * 100 : null;
+
+  // ── Balans ────────────────────────────────────────────────────────────────
   const totalDebt = fd.totalDebt?.raw || 0;
   const totalCash = fd.totalCash?.raw || 0;
   const ebitda = fd.ebitda?.raw || 0;
   const netDebt = totalDebt - totalCash;
   const netDebtEbitda = ebitda > 0 ? netDebt / ebitda : null;
 
+  // EV/EBITDA
+  const enterpriseValue = ks.enterpriseValue?.raw || null;
+  const evEbitda = enterpriseValue && ebitda > 0 ? enterpriseValue / ebitda : null;
+
+  // Short Interest %
+  const shortPct = ks.shortPercentOfFloat?.raw != null ? ks.shortPercentOfFloat.raw * 100 : null;
+
+  // ── Groei ─────────────────────────────────────────────────────────────────
+  const revenueGrowth = (fd.revenueGrowth?.raw || 0) * 100;
   const marketCap = sd.marketCap?.raw || null;
 
   return {
@@ -127,14 +147,26 @@ async function fetchFull(symbol) {
     name: ap.longName || ap.shortName || symbol,
     price,
     change,
+    // Waardering
     pe: effectivePE,
+    forwardPE,
     peg,
     pegSource,
+    evEbitda,
+    // Groei
     epsGrowth: epsGrowthPct,
     revenueGrowth,
+    // Winstgevendheid
     grossMargin,
+    operatingMargin,
     roic,
+    fcfMargin,
+    fcfYield,
+    // Balans
     netDebtEbitda,
+    // Risico
+    shortPct,
+    // Meta
     marketCap,
     sector: ap.sector || "—",
     logo: `https://logo.clearbit.com/${ap.website?.replace(/https?:\/\//, "").split("/")[0]}`,
@@ -451,48 +483,71 @@ function PEGChartTab({ portfolioSymbols }) {
 }
 
 // ── Scanner ───────────────────────────────────────────────────────────────────
-const COLS = "2.5fr 1fr 1fr 1.5fr 1fr 1fr 1fr 1fr 1fr 90px";
+const COLS = "2.5fr 1fr 1fr 1.8fr 1fr 1fr 1fr 1fr 1fr 80px";
+
+const roicColor = (v) => v == null ? "#555" : v >= 20 ? "#00e5a0" : v >= 15 ? "#f5c842" : "#ff6b6b";
+const ndColor   = (v) => v == null ? "#555" : v <= 1  ? "#00e5a0" : v <= 2  ? "#f5c842" : "#ff6b6b";
+const fcfColor  = (v) => v == null ? "#555" : v >= 15 ? "#00e5a0" : v >= 8  ? "#f5c842" : "#ff6b6b";
+const shortColor= (v) => v == null ? "#555" : v >= 20 ? "#ff6b6b" : v >= 10 ? "#f5c842" : "#666";
+const evColor   = (v) => v == null ? "#555" : v <= 15 ? "#00e5a0" : v <= 30  ? "#f5c842" : "#ff6b6b";
+
 const TableHeader = () => (
   <div style={{ display: "grid", gridTemplateColumns: COLS, padding: "10px 20px", borderBottom: "1px solid #1a1a1a" }}>
-    {["Symbol / Naam", "Price", "Chg%", "PEG", "P/E", "EPS Grw", "Margin", "ROIC", "ND/EBITDA", ""].map((h, i) => (
-      <div key={i} style={{ fontSize: 10, color: "#3a3a3a", fontWeight: 700, letterSpacing: 1.2, textTransform: "uppercase", fontFamily: "monospace", textAlign: i === 9 ? "right" : "left" }}>{h}</div>
+    {["Symbol / Naam", "Price", "Chg%", "PEG", "fwd P/E", "EPS Grw", "Gr.Mgn", "ROIC", "ND/EBITDA", ""].map((h, i) => (
+      <div key={i} style={{ fontSize: 10, color: "#3a3a3a", fontWeight: 700, letterSpacing: 1.1, textTransform: "uppercase", fontFamily: "monospace", textAlign: i === 9 ? "right" : "left" }}>{h}</div>
     ))}
   </div>
 );
 
-const roicColor = (v) => v == null ? "#666" : v >= 20 ? "#00e5a0" : v >= 15 ? "#f5c842" : "#ff6b6b";
-const ndColor = (v) => v == null ? "#666" : v <= 1 ? "#00e5a0" : v <= 2 ? "#f5c842" : "#ff6b6b";
-
 const StockRow = ({ stock, actions }) => (
-  <div style={{ display: "grid", gridTemplateColumns: COLS, alignItems: "center", padding: "13px 20px", borderBottom: "1px solid #0e0e0e", transition: "background 0.15s" }}
+  <div style={{ borderBottom: "1px solid #0e0e0e", transition: "background 0.15s" }}
     onMouseEnter={e => e.currentTarget.style.background = "#0b0b0b"}
     onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
-    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-      {stock.logo && <img src={stock.logo} alt="" style={{ width: 28, height: 28, borderRadius: 6, objectFit: "contain", background: "#141414", padding: 2 }} onError={e => e.target.style.display="none"}/>}
-      <div>
-        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-          <span style={{ fontFamily: "monospace", fontWeight: 700, fontSize: 13, color: "#fff" }}>{stock.symbol}</span>
-          {stock.pegSource && <span style={{ fontSize: 9, color: "#444", border: "1px solid #222", borderRadius: 3, padding: "1px 4px", fontFamily: "monospace" }}>{stock.pegSource}</span>}
+    {/* Primary row */}
+    <div style={{ display: "grid", gridTemplateColumns: COLS, alignItems: "center", padding: "11px 20px 4px" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        {stock.logo && <img src={stock.logo} alt="" style={{ width: 26, height: 26, borderRadius: 6, objectFit: "contain", background: "#141414", padding: 2 }} onError={e => e.target.style.display="none"}/>}
+        <div>
+          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <span style={{ fontFamily: "monospace", fontWeight: 700, fontSize: 13, color: "#fff" }}>{stock.symbol}</span>
+            {stock.pegSource && <span style={{ fontSize: 9, color: "#333", border: "1px solid #1e1e1e", borderRadius: 3, padding: "1px 4px", fontFamily: "monospace" }}>{stock.pegSource}</span>}
+          </div>
+          <div style={{ fontSize: 11, color: "#777", marginTop: 1, maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{stock.name}</div>
         </div>
-        <div style={{ fontSize: 11, color: "#888", marginTop: 2, maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{stock.name}</div>
+      </div>
+      <div style={{ fontFamily: "monospace", fontSize: 13, color: "#d0d0d0" }}>{fmt.price(stock.price)}</div>
+      <div style={{ fontFamily: "monospace", fontSize: 13, color: stock.change >= 0 ? "#00e5a0" : "#ff6b6b", fontWeight: 600 }}>{fmt.pct(stock.change)}</div>
+      <PEGBar peg={stock.peg}/>
+      <div style={{ fontFamily: "monospace", fontSize: 12, color: stock.forwardPE && stock.forwardPE < 25 ? "#00e5a0" : stock.forwardPE < 40 ? "#f5c842" : "#ff6b6b" }}>{fmt.num(stock.forwardPE)}</div>
+      <div style={{ fontFamily: "monospace", fontSize: 12, color: "#666" }}>{fmt.pct(stock.epsGrowth)}</div>
+      <div style={{ fontFamily: "monospace", fontSize: 12, color: "#666" }}>{fmt.pct(stock.grossMargin)}</div>
+      <div style={{ fontFamily: "monospace", fontSize: 12, color: roicColor(stock.roic), fontWeight: 600 }}>{stock.roic != null ? fmt.pct(stock.roic) : "—"}</div>
+      <div style={{ fontFamily: "monospace", fontSize: 12, color: ndColor(stock.netDebtEbitda), fontWeight: 600 }}>{stock.netDebtEbitda != null ? fmt.num(stock.netDebtEbitda) : "—"}</div>
+      <div style={{ display: "flex", gap: 5, justifyContent: "flex-end" }}>
+        {actions.map((a, i) => (
+          <button key={i} onClick={() => a.fn(stock)} title={a.label}
+            style={{ background: "#141414", border: "1px solid #222", borderRadius: 6, color: a.color || "#555", padding: "5px 8px", cursor: "pointer", display: "flex", alignItems: "center", transition: "all 0.15s" }}
+            onMouseEnter={e => { e.currentTarget.style.borderColor = a.color || "#444"; e.currentTarget.style.color = a.color || "#ccc"; }}
+            onMouseLeave={e => { e.currentTarget.style.borderColor = "#222"; e.currentTarget.style.color = a.color || "#555"; }}>
+            <Icon name={a.icon} size={12}/>
+          </button>
+        ))}
       </div>
     </div>
-    <div style={{ fontFamily: "monospace", fontSize: 13, color: "#d0d0d0" }}>{fmt.price(stock.price)}</div>
-    <div style={{ fontFamily: "monospace", fontSize: 13, color: stock.change >= 0 ? "#00e5a0" : "#ff6b6b", fontWeight: 600 }}>{fmt.pct(stock.change)}</div>
-    <PEGBar peg={stock.peg}/>
-    <div style={{ fontFamily: "monospace", fontSize: 12, color: "#666" }}>{fmt.num(stock.pe)}</div>
-    <div style={{ fontFamily: "monospace", fontSize: 12, color: "#666" }}>{fmt.pct(stock.epsGrowth)}</div>
-    <div style={{ fontFamily: "monospace", fontSize: 12, color: "#666" }}>{fmt.pct(stock.grossMargin)}</div>
-    <div style={{ fontFamily: "monospace", fontSize: 12, color: roicColor(stock.roic), fontWeight: 600 }}>{stock.roic != null ? fmt.pct(stock.roic) : "—"}</div>
-    <div style={{ fontFamily: "monospace", fontSize: 12, color: ndColor(stock.netDebtEbitda), fontWeight: 600 }}>{stock.netDebtEbitda != null ? fmt.num(stock.netDebtEbitda) : "—"}</div>
-    <div style={{ display: "flex", gap: 5, justifyContent: "flex-end" }}>
-      {actions.map((a, i) => (
-        <button key={i} onClick={() => a.fn(stock)} title={a.label}
-          style={{ background: "#141414", border: "1px solid #222", borderRadius: 6, color: a.color || "#555", padding: "5px 8px", cursor: "pointer", display: "flex", alignItems: "center", transition: "all 0.15s" }}
-          onMouseEnter={e => { e.currentTarget.style.borderColor = a.color || "#444"; e.currentTarget.style.color = a.color || "#ccc"; }}
-          onMouseLeave={e => { e.currentTarget.style.borderColor = "#222"; e.currentTarget.style.color = a.color || "#555"; }}>
-          <Icon name={a.icon} size={12}/>
-        </button>
+    {/* Secondary row: FCF Margin, FCF Yield, EV/EBITDA, Short % */}
+    <div style={{ display: "flex", gap: 20, padding: "3px 20px 10px", paddingLeft: stock.logo ? 76 : 20 }}>
+      {[
+        ["FCF Mgn", stock.fcfMargin != null ? fmt.pct(stock.fcfMargin) : "—", fcfColor(stock.fcfMargin)],
+        ["FCF Yield", stock.fcfYield != null ? fmt.pct(stock.fcfYield) : "—", fcfColor(stock.fcfYield)],
+        ["EV/EBITDA", stock.evEbitda != null ? fmt.num(stock.evEbitda) : "—", evColor(stock.evEbitda)],
+        ["Short%", stock.shortPct != null ? fmt.pct(stock.shortPct) : "—", shortColor(stock.shortPct)],
+        ["Op.Mgn", stock.operatingMargin != null ? fmt.pct(stock.operatingMargin) : "—", "#555"],
+        ["Rev Grw", fmt.pct(stock.revenueGrowth), "#555"],
+      ].map(([label, val, color]) => (
+        <div key={label} style={{ display: "flex", alignItems: "baseline", gap: 5 }}>
+          <span style={{ fontSize: 9, color: "#333", textTransform: "uppercase", letterSpacing: 0.8, fontFamily: "monospace" }}>{label}</span>
+          <span style={{ fontSize: 11, color, fontFamily: "monospace", fontWeight: 600 }}>{val}</span>
+        </div>
       ))}
     </div>
   </div>
@@ -501,7 +556,7 @@ const StockRow = ({ stock, actions }) => (
 function ScannerTab({ onAddToShortlist, portfolioSymbols, shortlistSymbols, scanResults, setScanResults }) {
   const [universe, setUniverse] = useState([]);
   const [customInput, setCustomInput] = useState("");
-  const [filters, setFilters] = useState({ pegMax: 2, peMax: 40, epsGrowthMin: 10, grossMarginMin: 30, roicMin: 15, netDebtEbitdaMax: 2 });
+  const [filters, setFilters] = useState({ pegMax: 2, peMax: 40, epsGrowthMin: 10, grossMarginMin: 30, roicMin: 15, netDebtEbitdaMax: 2, evEbitdaMax: 30, fcfMarginMin: 0 });
   const [loading, setLoading] = useState(false);
   const [progress, setProgress] = useState("");
   const [scanned, setScanned] = useState(0);
@@ -536,11 +591,13 @@ function ScannerTab({ onAddToShortlist, portfolioSymbols, shortlistSymbols, scan
 
   const filtered = scanResults.filter(s =>
     (s.peg == null || s.peg <= filters.pegMax) &&
-    (s.pe == null || s.pe <= filters.peMax) &&
+    (s.forwardPE == null || s.forwardPE <= filters.peMax) &&
     s.epsGrowth >= filters.epsGrowthMin &&
     s.grossMargin >= filters.grossMarginMin &&
     (s.roic == null || s.roic >= filters.roicMin) &&
-    (s.netDebtEbitda == null || s.netDebtEbitda <= filters.netDebtEbitdaMax)
+    (s.netDebtEbitda == null || s.netDebtEbitda <= filters.netDebtEbitdaMax) &&
+    (s.evEbitda == null || s.evEbitda <= filters.evEbitdaMax) &&
+    (s.fcfMargin == null || s.fcfMargin >= filters.fcfMarginMin)
   );
 
   return (
@@ -578,7 +635,12 @@ function ScannerTab({ onAddToShortlist, portfolioSymbols, shortlistSymbols, scan
 
       {/* Filters */}
       <div style={{ display: "flex", gap: 12, marginBottom: 20, flexWrap: "wrap" }}>
-        {[["PEG ≤", "pegMax", 0.1], ["P/E ≤", "peMax", 1], ["EPS Grw ≥%", "epsGrowthMin", 1], ["Gross Mgn ≥%", "grossMarginMin", 1], ["ROIC ≥%", "roicMin", 1], ["ND/EBITDA ≤", "netDebtEbitdaMax", 0.1]].map(([label, key, step]) => (
+        {[
+          ["PEG ≤", "pegMax", 0.1], ["fwd P/E ≤", "peMax", 1],
+          ["EPS Grw ≥%", "epsGrowthMin", 1], ["Gross Mgn ≥%", "grossMarginMin", 1],
+          ["ROIC ≥%", "roicMin", 1], ["ND/EBITDA ≤", "netDebtEbitdaMax", 0.1],
+          ["EV/EBITDA ≤", "evEbitdaMax", 1], ["FCF Mgn ≥%", "fcfMarginMin", 1],
+        ].map(([label, key, step]) => (
           <div key={key}>
             <div style={{ fontSize: 10, color: "#444", letterSpacing: 1, textTransform: "uppercase", marginBottom: 4 }}>{label}</div>
             <input type="number" step={step} value={filters[key]} onChange={e => setFilters(p => ({ ...p, [key]: parseFloat(e.target.value) }))}
