@@ -677,7 +677,7 @@ function ScannerTab({ onAddToShortlist, portfolioSymbols, shortlistSymbols, scan
   );
 }
 
-// ── Shortlist ─────────────────────────────────────────────────────────────────
+// ── Shortlist Instapmoment Dashboard ─────────────────────────────────────────
 function ShortlistTab({ shortlist, setShortlist }) {
   const [adding, setAdding] = useState(false);
   const [form, setForm] = useState({ symbol: "", target: "", thesis: "" });
@@ -687,8 +687,31 @@ function ShortlistTab({ shortlist, setShortlist }) {
   const refresh = useCallback(async () => {
     setRefreshing(true);
     const out = {};
-    for (const item of shortlist) { const d = await fetchFull(item.symbol); if (d) out[item.symbol] = d; }
-    setStocks(out); setRefreshing(false);
+    for (const item of shortlist) {
+      const d = await fetchFull(item.symbol);
+      if (d) {
+        // Get 52-week data via Yahoo quote
+        const qd = await yahooQuote(item.symbol);
+        const meta = qd?.chart?.result?.[0]?.meta;
+        out[item.symbol] = {
+          ...d,
+          week52High: meta?.fiftyTwoWeekHigh || null,
+          week52Low: meta?.fiftyTwoWeekLow || null,
+          analystTarget: null, // comes from quoteSummary financialData.targetMeanPrice
+        };
+        // Get analyst target from summary
+        const sd = await yahooSummary(item.symbol);
+        const fin = sd?.quoteSummary?.result?.[0]?.financialData;
+        out[item.symbol].analystTarget = fin?.targetMeanPrice?.raw || null;
+        out[item.symbol].analystHigh = fin?.targetHighPrice?.raw || null;
+        out[item.symbol].analystLow = fin?.targetLowPrice?.raw || null;
+        out[item.symbol].numAnalysts = fin?.numberOfAnalystOpinions?.raw || null;
+        out[item.symbol].recommendation = fin?.recommendationKey || null;
+        if (d.peg) db.savePegSnapshot(item.symbol, d.peg, d.pe, d.price, d.epsGrowth).catch(() => {});
+      }
+    }
+    setStocks(out);
+    setRefreshing(false);
   }, [shortlist]);
 
   useEffect(() => { if (shortlist.length) refresh(); }, [shortlist.length]);
@@ -699,20 +722,56 @@ function ShortlistTab({ shortlist, setShortlist }) {
     await db.upsertShortlist(entry);
     setShortlist(p => p.find(s => s.symbol === entry.symbol) ? p : [...p, { ...entry, addedAt: Date.now() }]);
     setAdding(false); setForm({ symbol: "", target: "", thesis: "" });
-    const d = await fetchFull(entry.symbol);
-    if (d) { setStocks(p => ({ ...p, [entry.symbol]: d })); if (d.peg) db.savePegSnapshot(entry.symbol, d.peg, d.pe, d.price, d.epsGrowth).catch(() => {}); }
   };
 
   const remove = async (sym) => { await db.deleteShortlist(sym); setShortlist(p => p.filter(s => s.symbol !== sym)); };
   const updateStatus = async (sym, status) => { await db.updateShortlistStatus(sym, status); setShortlist(p => p.map(s => s.symbol === sym ? { ...s, status } : s)); };
+  const updateTarget = async (sym, target) => {
+    await SB.from("shortlist").update({ target: parseFloat(target) || null }).eq("symbol", sym);
+    setShortlist(p => p.map(s => s.symbol === sym ? { ...s, target: parseFloat(target) || null } : s));
+  };
 
   const STATUSES = ["Watching", "Ready to Buy", "Bought", "Exited"];
   const statusColor = { "Watching": "#444", "Ready to Buy": "#f5c842", "Bought": "#00e5a0", "Exited": "#ff6b6b" };
+  const recColor = { "strong_buy": "#00e5a0", "buy": "#7be0c0", "hold": "#f5c842", "underperform": "#ff9966", "sell": "#ff6b6b" };
+
+  // Instapmoment score: 0-100 gebaseerd op 52w positie, analyst upside, PEG
+  const calcScore = (s, item) => {
+    if (!s) return null;
+    let score = 50;
+    // 52-week positie: laag = koopkans
+    if (s.week52High && s.week52Low) {
+      const range = s.week52High - s.week52Low;
+      const pos = range > 0 ? (s.price - s.week52Low) / range : 0.5;
+      score -= (pos - 0.5) * 40; // onderin range = +20pts, bovenkant = -20pts
+    }
+    // Analyst upside
+    if (s.analystTarget && s.price) {
+      const upside = (s.analystTarget - s.price) / s.price;
+      score += Math.min(upside * 100, 30); // max +30pts bij hoog upside
+    }
+    // PEG
+    if (s.peg) {
+      if (s.peg < 0.8) score += 15;
+      else if (s.peg < 1.5) score += 5;
+      else score -= 10;
+    }
+    // Entry target bereikt
+    if (item.target && s.price <= item.target) score += 20;
+    return Math.max(0, Math.min(100, Math.round(score)));
+  };
+
+  const scoreLabel = (score) => {
+    if (score === null) return ["—", "#444"];
+    if (score >= 70) return ["KOOPKANS", "#00e5a0"];
+    if (score >= 50) return ["FAIR", "#f5c842"];
+    return ["DUUR", "#ff6b6b"];
+  };
 
   return (
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 18 }}>
-        <span style={{ color: "#444", fontSize: 12, fontFamily: "monospace" }}>{shortlist.length} on shortlist · Supabase</span>
+        <span style={{ color: "#444", fontSize: 12, fontFamily: "monospace" }}>{shortlist.length} positions · instapmoment dashboard</span>
         <div style={{ display: "flex", gap: 8 }}>
           <button onClick={refresh} disabled={refreshing} style={{ background: "#0a0a0a", border: "1px solid #1e1e1e", borderRadius: 8, color: refreshing ? "#2a2a2a" : "#555", padding: "7px 12px", cursor: "pointer", display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}>
             {refreshing ? <Spinner/> : <Icon name="refresh" size={13}/>} Refresh
@@ -722,6 +781,7 @@ function ShortlistTab({ shortlist, setShortlist }) {
           </button>
         </div>
       </div>
+
       {adding && (
         <div style={{ background: "#070707", border: "1px solid #1e1e1e", borderRadius: 12, padding: 16, marginBottom: 16 }}>
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end" }}>
@@ -737,58 +797,152 @@ function ShortlistTab({ shortlist, setShortlist }) {
           </div>
         </div>
       )}
+
       {shortlist.length === 0 && !adding && (
         <div style={{ textAlign: "center", padding: 60, color: "#222", fontFamily: "monospace" }}>
           <div style={{ fontSize: 30, marginBottom: 10 }}>★</div>
-          <div>Shortlist empty — scan and add stocks</div>
+          <div>Shortlist leeg — voeg stocks toe via de Scanner</div>
         </div>
       )}
-      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(420px, 1fr))", gap: 12 }}>
         {shortlist.map(item => {
           const s = stocks[item.symbol];
+          const score = calcScore(s, item);
+          const [signalLabel, signalColor] = scoreLabel(score);
+          const week52Pct = s?.week52High && s?.week52Low
+            ? ((s.price - s.week52Low) / (s.week52High - s.week52Low)) * 100
+            : null;
+          const analystUpside = s?.analystTarget && s?.price
+            ? ((s.analystTarget - s.price) / s.price) * 100
+            : null;
           const atTarget = s && item.target && s.price <= item.target;
+
           return (
-            <div key={item.symbol} style={{ background: "#070707", border: `1px solid ${atTarget ? "#00e5a033" : "#141414"}`, borderRadius: 12, padding: "15px 20px" }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, flexWrap: "wrap" }}>
-                <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
-                  {s?.logo && <img src={s.logo} alt="" style={{ width: 30, height: 30, borderRadius: 7, objectFit: "contain", background: "#111", padding: 3 }} onError={e => e.target.style.display="none"}/>}
+            <div key={item.symbol} style={{ background: "#070707", border: `1px solid ${atTarget ? "#00e5a033" : score >= 70 ? "#00e5a018" : "#141414"}`, borderRadius: 14, padding: "18px 20px", position: "relative" }}>
+
+              {/* Header */}
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 14 }}>
+                <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                  {s?.logo && <img src={s.logo} alt="" style={{ width: 32, height: 32, borderRadius: 8, objectFit: "contain", background: "#111", padding: 3 }} onError={e => e.target.style.display="none"}/>}
                   <div>
-                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                      <span style={{ fontFamily: "monospace", fontSize: 16, fontWeight: 700, color: "#fff" }}>{item.symbol}</span>
-                      {atTarget && <Badge color="#00e5a0">🎯 AT TARGET</Badge>}
-                    </div>
-                    <div style={{ color: "#444", fontSize: 11, marginTop: 2 }}>{s?.name || "—"}</div>
+                    <div style={{ fontFamily: "monospace", fontSize: 16, fontWeight: 700, color: "#fff" }}>{item.symbol}</div>
+                    <div style={{ fontSize: 11, color: "#555", marginTop: 1, maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{s?.name || "—"}</div>
                   </div>
                 </div>
-                <div style={{ display: "flex", gap: 7, alignItems: "center" }}>
+                <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 6 }}>
+                  {/* Instap signaal */}
+                  <div style={{ background: signalColor + "22", border: `1px solid ${signalColor}44`, borderRadius: 6, padding: "3px 10px", fontSize: 11, fontWeight: 700, color: signalColor, fontFamily: "monospace" }}>
+                    {score !== null ? `${score} — ${signalLabel}` : "laden…"}
+                  </div>
                   <select value={item.status} onChange={e => updateStatus(item.symbol, e.target.value)}
-                    style={{ background: "#0d0d0d", border: `1px solid ${statusColor[item.status]}44`, borderRadius: 6, color: statusColor[item.status], padding: "5px 9px", fontSize: 12, fontFamily: "monospace", cursor: "pointer" }}>
+                    style={{ background: "#0d0d0d", border: `1px solid ${statusColor[item.status]}33`, borderRadius: 5, color: statusColor[item.status], padding: "3px 8px", fontSize: 11, fontFamily: "monospace", cursor: "pointer" }}>
                     {STATUSES.map(st => <option key={st}>{st}</option>)}
                   </select>
-                  <button onClick={() => remove(item.symbol)} style={{ background: "#111", border: "1px solid #1e1e1e", borderRadius: 6, color: "#444", padding: "5px 7px", cursor: "pointer" }}><Icon name="trash" size={12}/></button>
                 </div>
               </div>
-              {s && (
-                <div style={{ display: "flex", gap: 20, marginTop: 13, flexWrap: "wrap" }}>
-                  {[["Price", fmt.price(s.price), s.change >= 0 ? "#00e5a0" : "#ff6b6b"],
-                    ["Day", fmt.pct(s.change), s.change >= 0 ? "#00e5a0" : "#ff6b6b"],
-                    ["PEG", fmt.num(s.peg), pegColor(s.peg)],
-                    ["P/E", fmt.num(s.pe), "#666"],
-                    ["EPS Grw", fmt.pct(s.epsGrowth), "#666"],
-                    ["Entry", item.target ? fmt.price(item.target) : "—", "#f5c842"],
-                    ["Gap", item.target && s.price ? fmt.pct(((item.target - s.price) / s.price) * 100) : "—", "#555"],
-                  ].map(([label, val, color]) => (
-                    <div key={label}>
-                      <div style={{ fontSize: 9, color: "#333", letterSpacing: 1.2, textTransform: "uppercase", marginBottom: 3 }}>{label}</div>
-                      <div style={{ fontFamily: "monospace", fontSize: 14, color, fontWeight: 600 }}>{val}</div>
-                    </div>
-                  ))}
+
+              {/* Prijs + change */}
+              <div style={{ display: "flex", gap: 16, alignItems: "baseline", marginBottom: 14 }}>
+                <span style={{ fontFamily: "monospace", fontSize: 22, fontWeight: 700, color: "#e0e0e0" }}>{s ? fmt.price(s.price) : <Spinner/>}</span>
+                {s && <span style={{ fontFamily: "monospace", fontSize: 13, color: s.change >= 0 ? "#00e5a0" : "#ff6b6b", fontWeight: 600 }}>{fmt.pct(s.change)} vandaag</span>}
+              </div>
+
+              {/* 52-week balk */}
+              {week52Pct !== null && (
+                <div style={{ marginBottom: 14 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
+                    <span style={{ fontSize: 10, color: "#333", fontFamily: "monospace" }}>52W LOW {fmt.price(s.week52Low)}</span>
+                    <span style={{ fontSize: 10, color: "#555", fontFamily: "monospace" }}>positie {week52Pct.toFixed(0)}%</span>
+                    <span style={{ fontSize: 10, color: "#333", fontFamily: "monospace" }}>52W HIGH {fmt.price(s.week52High)}</span>
+                  </div>
+                  <div style={{ height: 6, background: "#111", borderRadius: 3, position: "relative", overflow: "visible" }}>
+                    <div style={{ position: "absolute", left: 0, top: 0, width: `${week52Pct}%`, height: "100%", background: week52Pct < 30 ? "#00e5a0" : week52Pct < 70 ? "#f5c842" : "#ff6b6b", borderRadius: 3 }}/>
+                    <div style={{ position: "absolute", left: `${week52Pct}%`, top: -3, width: 2, height: 12, background: "#fff", borderRadius: 1, transform: "translateX(-50%)" }}/>
+                    {item.target && s && (
+                      <div style={{ position: "absolute", left: `${Math.max(0, Math.min(100, ((item.target - s.week52Low) / (s.week52High - s.week52Low)) * 100))}%`, top: -5, fontSize: 9, color: "#f5c842", transform: "translateX(-50%)", whiteSpace: "nowrap", fontFamily: "monospace" }}>▼ target</div>
+                    )}
+                  </div>
                 </div>
               )}
-              {item.thesis && (
-                <div style={{ marginTop: 11, background: "#0a0a0a", borderRadius: 6, padding: "7px 12px", borderLeft: "2px solid #1e1e1e" }}>
-                  <span style={{ fontSize: 11, color: "#555", fontStyle: "italic" }}>{item.thesis}</span>
+
+              {/* Key metrics grid */}
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 8, marginBottom: 14 }}>
+                {[
+                  ["PEG", fmt.num(s?.peg), pegColor(s?.peg)],
+                  ["fwd P/E", fmt.num(s?.forwardPE), s?.forwardPE < 25 ? "#00e5a0" : s?.forwardPE < 40 ? "#f5c842" : "#ff6b6b"],
+                  ["EPS Grw", fmt.pct(s?.epsGrowth), "#888"],
+                  ["Gross Mgn", fmt.pct(s?.grossMargin), "#888"],
+                ].map(([label, val, color]) => (
+                  <div key={label} style={{ background: "#0a0a0a", borderRadius: 7, padding: "8px 10px" }}>
+                    <div style={{ fontSize: 9, color: "#333", textTransform: "uppercase", letterSpacing: 1, marginBottom: 3 }}>{label}</div>
+                    <div style={{ fontFamily: "monospace", fontSize: 13, fontWeight: 600, color }}>{val}</div>
+                  </div>
+                ))}
+              </div>
+
+              {/* Analyst consensus */}
+              {s?.analystTarget && (
+                <div style={{ background: "#0a0a0a", borderRadius: 8, padding: "10px 12px", marginBottom: 12 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                    <span style={{ fontSize: 10, color: "#444", textTransform: "uppercase", letterSpacing: 1 }}>Analyst consensus · {s.numAnalysts} analisten</span>
+                    {s.recommendation && (
+                      <span style={{ fontSize: 10, color: recColor[s.recommendation] || "#888", fontWeight: 700, textTransform: "uppercase" }}>{s.recommendation?.replace("_", " ")}</span>
+                    )}
+                  </div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                    <span style={{ fontSize: 11, color: "#444", fontFamily: "monospace" }}>{fmt.price(s.analystLow)}</span>
+                    <div style={{ flex: 1, height: 4, background: "#1a1a1a", borderRadius: 2, position: "relative" }}>
+                      {/* Range bar */}
+                      {s.analystLow && s.analystHigh && (
+                        <div style={{
+                          position: "absolute",
+                          left: `${Math.max(0, ((s.analystLow - s.price * 0.7) / (s.price * 0.6)) * 100)}%`,
+                          width: "60%",
+                          height: "100%",
+                          background: "#00e5a033",
+                          borderRadius: 2
+                        }}/>
+                      )}
+                      {/* Current price marker */}
+                      <div style={{ position: "absolute", left: "30%", top: -4, width: 2, height: 12, background: "#555", borderRadius: 1 }}/>
+                      {/* Target marker */}
+                      {s.analystTarget && s.analystLow && s.analystHigh && (
+                        <div style={{
+                          position: "absolute",
+                          left: `${Math.min(95, Math.max(5, 30 + (((s.analystTarget - s.price) / (s.analystHigh - s.analystLow)) * 60)))}%`,
+                          top: -4, width: 2, height: 12, background: "#00e5a0", borderRadius: 1
+                        }}/>
+                      )}
+                    </div>
+                    <span style={{ fontSize: 11, color: "#444", fontFamily: "monospace" }}>{fmt.price(s.analystHigh)}</span>
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "center", marginTop: 6, gap: 6, alignItems: "center" }}>
+                    <span style={{ fontSize: 12, color: "#888", fontFamily: "monospace" }}>Target: {fmt.price(s.analystTarget)}</span>
+                    <span style={{ fontSize: 12, color: analystUpside >= 0 ? "#00e5a0" : "#ff6b6b", fontWeight: 700, fontFamily: "monospace" }}>
+                      {analystUpside !== null ? `${analystUpside >= 0 ? "+" : ""}${analystUpside.toFixed(1)}%` : ""}
+                    </span>
+                  </div>
                 </div>
+              )}
+
+              {/* Entry target + thesis */}
+              <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: item.thesis ? 10 : 0 }}>
+                <span style={{ fontSize: 10, color: "#333", textTransform: "uppercase", letterSpacing: 1 }}>Entry target:</span>
+                <input
+                  defaultValue={item.target || ""}
+                  onBlur={e => updateTarget(item.symbol, e.target.value)}
+                  placeholder="$ instapprijs"
+                  style={{ background: "transparent", border: "none", borderBottom: "1px solid #222", color: "#f5c842", fontFamily: "monospace", fontSize: 12, width: 90, padding: "2px 4px", outline: "none" }}/>
+                {atTarget && <Badge color="#00e5a0">🎯 BEREIKT</Badge>}
+                <button onClick={() => remove(item.symbol)} style={{ marginLeft: "auto", background: "transparent", border: "none", color: "#2a2a2a", cursor: "pointer", padding: "2px 6px" }}
+                  onMouseEnter={e => e.currentTarget.style.color = "#ff6b6b"}
+                  onMouseLeave={e => e.currentTarget.style.color = "#2a2a2a"}>
+                  <Icon name="trash" size={12}/>
+                </button>
+              </div>
+              {item.thesis && (
+                <div style={{ fontSize: 11, color: "#444", fontStyle: "italic", borderLeft: "2px solid #1a1a1a", paddingLeft: 10 }}>{item.thesis}</div>
               )}
             </div>
           );
@@ -1116,6 +1270,247 @@ function UniversumTab() {
   );
 }
 
+// ── Markt Tab ─────────────────────────────────────────────────────────────────
+function MarktTab() {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [lastUpdated, setLastUpdated] = useState(null);
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const r = await fetch("/api/market");
+      const d = await r.json();
+      setData(d);
+      setLastUpdated(new Date());
+      // Save snapshot to DB
+      if (d.vix) {
+        await SB.from("market_snapshots").upsert({
+          date: new Date().toISOString().split("T")[0],
+          vix: d.vix,
+          fear_greed: d.fearGreed?.score,
+          sp500_price: d.sp500,
+          sp500_change: d.sp500Change,
+          treasury_10y: d.treasury10y,
+          dxy: d.dxy,
+        }, { onConflict: "date" });
+      }
+    } catch (e) { console.error(e); }
+    setLoading(false);
+  };
+
+  useEffect(() => { load(); }, []);
+
+  const vixSignal = (vix) => {
+    if (!vix) return ["—", "#444", "geen data"];
+    if (vix < 15) return ["COMPLACENT", "#f5c842", "Markt is zelfgenoegzaam — valuations vaak hoog"];
+    if (vix < 20) return ["RUSTIG", "#00e5a0", "Normale marktomstandigheden"];
+    if (vix < 30) return ["VERHOOGD", "#f5c842", "Nervositeit — let op risico's"];
+    if (vix < 40) return ["ANGST", "#ff6b6b", "Paniek aanwezig — historisch koopgebied"];
+    return ["EXTREME ANGST", "#ff4444", "Extreme paniek — selectief koopkansen"];
+  };
+
+  const fgSignal = (score) => {
+    if (score === null || score === undefined) return ["—", "#444"];
+    if (score <= 25) return ["EXTREME ANGST", "#00e5a0"];
+    if (score <= 45) return ["ANGST", "#7be0c0"];
+    if (score <= 55) return ["NEUTRAAL", "#f5c842"];
+    if (score <= 75) return ["HEBZUCHT", "#ff9966"];
+    return ["EXTREME HEBZUCHT", "#ff6b6b"];
+  };
+
+  const yieldSignal = (y) => {
+    if (!y) return ["—", "#444"];
+    if (y < 3.5) return ["LAAG", "#00e5a0"];
+    if (y < 4.5) return ["NEUTRAAL", "#f5c842"];
+    return ["HOOG", "#ff6b6b"];
+  };
+
+  // Overall markt beoordeling
+  const overallSignal = () => {
+    if (!data) return null;
+    let score = 0;
+    let factors = 0;
+    if (data.vix) { score += data.vix > 30 ? 2 : data.vix > 20 ? 1 : 0; factors++; }
+    if (data.fearGreed?.score != null) { score += data.fearGreed.score < 30 ? 2 : data.fearGreed.score < 45 ? 1 : 0; factors++; }
+    if (data.treasury10y) { score += data.treasury10y < 3.5 ? 1 : data.treasury10y > 4.5 ? -1 : 0; factors++; }
+    const avg = factors ? score / factors : 0;
+    if (avg >= 1.5) return ["STERKE KOOPKANS", "#00e5a0", "Meerdere indicatoren wijzen op aantrekkelijk instapmoment"];
+    if (avg >= 0.8) return ["MATIGE KOOPKANS", "#7be0c0", "Omstandigheden gunstig maar niet extreem"];
+    if (avg >= 0) return ["NEUTRAAL", "#f5c842", "Gemengd signaal — selectief zijn"];
+    return ["VOORZICHTIGHEID", "#ff6b6b", "Marktomstandigheden pleiten voor geduld"];
+  };
+
+  const overall = overallSignal();
+  const [vLabel, vColor, vDesc] = vixSignal(data?.vix);
+  const [fgLabel, fgColor] = fgSignal(data?.fearGreed?.score);
+  const [yLabel, yColor] = yieldSignal(data?.treasury10y);
+
+  return (
+    <div>
+      {/* Overall signaal */}
+      {overall && (
+        <div style={{ background: overall[1] + "11", border: `1px solid ${overall[1]}33`, borderRadius: 14, padding: "20px 24px", marginBottom: 24, display: "flex", alignItems: "center", gap: 16 }}>
+          <div style={{ fontSize: 32 }}>
+            {overall[0].includes("STERK") ? "🟢" : overall[0].includes("MATIG") ? "🟡" : overall[0].includes("NEUTRAAL") ? "🟡" : "🔴"}
+          </div>
+          <div>
+            <div style={{ fontFamily: "monospace", fontSize: 18, fontWeight: 700, color: overall[1] }}>{overall[0]}</div>
+            <div style={{ fontSize: 12, color: "#666", marginTop: 4 }}>{overall[2]}</div>
+          </div>
+          <div style={{ marginLeft: "auto", fontSize: 10, color: "#2a2a2a", fontFamily: "monospace" }}>
+            {lastUpdated ? `bijgewerkt ${lastUpdated.toLocaleTimeString("nl-NL", { hour: "2-digit", minute: "2-digit" })}` : ""}
+          </div>
+          <button onClick={load} disabled={loading} style={{ background: "transparent", border: "1px solid #222", borderRadius: 8, color: loading ? "#2a2a2a" : "#555", padding: "7px 12px", cursor: "pointer", display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}>
+            {loading ? <Spinner/> : <Icon name="refresh" size={13}/>}
+          </button>
+        </div>
+      )}
+
+      {loading && !data ? (
+        <div style={{ display: "flex", alignItems: "center", gap: 10, color: "#333", fontFamily: "monospace", padding: "40px 0" }}><Spinner/> Marktdata laden…</div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+
+          {/* Rij 1: VIX + Fear & Greed */}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            {/* VIX */}
+            <div style={{ background: "#070707", border: "1px solid #141414", borderRadius: 12, padding: "20px 22px" }}>
+              <div style={{ fontSize: 10, color: "#444", textTransform: "uppercase", letterSpacing: 1.2, marginBottom: 12 }}>VIX — Volatiliteitsindex</div>
+              <div style={{ display: "flex", alignItems: "baseline", gap: 12, marginBottom: 8 }}>
+                <span style={{ fontFamily: "monospace", fontSize: 36, fontWeight: 700, color: vColor }}>{data?.vix?.toFixed(1) || "—"}</span>
+                {data?.vixChange != null && (
+                  <span style={{ fontFamily: "monospace", fontSize: 13, color: data.vixChange >= 0 ? "#ff6b6b" : "#00e5a0" }}>
+                    {data.vixChange >= 0 ? "+" : ""}{data.vixChange.toFixed(1)}%
+                  </span>
+                )}
+              </div>
+              <div style={{ display: "inline-block", background: vColor + "22", border: `1px solid ${vColor}44`, borderRadius: 5, padding: "3px 10px", fontSize: 11, fontWeight: 700, color: vColor, fontFamily: "monospace", marginBottom: 8 }}>{vLabel}</div>
+              <div style={{ fontSize: 11, color: "#444", lineHeight: 1.5 }}>{vDesc}</div>
+              {/* VIX schaal */}
+              <div style={{ marginTop: 14 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
+                  {["10", "15", "20", "30", "40+"].map(v => <span key={v} style={{ fontSize: 9, color: "#2a2a2a", fontFamily: "monospace" }}>{v}</span>)}
+                </div>
+                <div style={{ height: 6, borderRadius: 3, background: "linear-gradient(to right, #00e5a0, #f5c842, #ff6b6b)", position: "relative" }}>
+                  {data?.vix && (
+                    <div style={{ position: "absolute", left: `${Math.min(95, Math.max(2, ((data.vix - 10) / 30) * 100))}%`, top: -4, width: 3, height: 14, background: "#fff", borderRadius: 2, transform: "translateX(-50%)" }}/>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* Fear & Greed */}
+            <div style={{ background: "#070707", border: "1px solid #141414", borderRadius: 12, padding: "20px 22px" }}>
+              <div style={{ fontSize: 10, color: "#444", textTransform: "uppercase", letterSpacing: 1.2, marginBottom: 12 }}>Fear & Greed Index — CNN</div>
+              {data?.fearGreed ? (
+                <>
+                  <div style={{ display: "flex", alignItems: "baseline", gap: 12, marginBottom: 8 }}>
+                    <span style={{ fontFamily: "monospace", fontSize: 36, fontWeight: 700, color: fgColor }}>{data.fearGreed.score}</span>
+                    <span style={{ fontSize: 12, color: "#555" }}>/ 100</span>
+                  </div>
+                  <div style={{ display: "inline-block", background: fgColor + "22", border: `1px solid ${fgColor}44`, borderRadius: 5, padding: "3px 10px", fontSize: 11, fontWeight: 700, color: fgColor, fontFamily: "monospace", marginBottom: 8 }}>{fgLabel}</div>
+                  <div style={{ fontSize: 11, color: "#444" }}>
+                    {data.fearGreed.score <= 25 ? "Historisch gezien een koopsignaal — angst drijft prijzen te laag" :
+                     data.fearGreed.score <= 45 ? "Voorzichtigheid geboden — markt is nerveus" :
+                     data.fearGreed.score <= 55 ? "Gemengd sentiment — geen duidelijk signaal" :
+                     data.fearGreed.score <= 75 ? "Markt is hebzuchtig — valuations kunnen hoog zijn" :
+                     "Extreme hebzucht — historisch moment om voorzichtig te zijn"}
+                  </div>
+                  <div style={{ marginTop: 14, height: 6, borderRadius: 3, background: "linear-gradient(to right, #00e5a0, #f5c842, #ff6b6b)", position: "relative" }}>
+                    <div style={{ position: "absolute", left: `${Math.min(95, Math.max(2, data.fearGreed.score))}%`, top: -4, width: 3, height: 14, background: "#fff", borderRadius: 2, transform: "translateX(-50%)" }}/>
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "space-between", marginTop: 4 }}>
+                    <span style={{ fontSize: 9, color: "#00e5a0", fontFamily: "monospace" }}>ANGST</span>
+                    <span style={{ fontSize: 9, color: "#ff6b6b", fontFamily: "monospace" }}>HEBZUCHT</span>
+                  </div>
+                </>
+              ) : (
+                <div style={{ color: "#333", fontSize: 12 }}>Fear & Greed niet beschikbaar</div>
+              )}
+            </div>
+          </div>
+
+          {/* Rij 2: S&P500, Treasury, DXY */}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
+            {[
+              {
+                label: "S&P 500",
+                value: data?.sp500 ? `$${data.sp500.toFixed(0)}` : "—",
+                change: data?.sp500Change,
+                desc: data?.sp500Change >= 0 ? "Markt in opgaande trend" : "Markt onder druk",
+                color: data?.sp500Change >= 0 ? "#00e5a0" : "#ff6b6b",
+                note: "Algemene marktrichting"
+              },
+              {
+                label: "10jr Treasury Yield",
+                value: data?.treasury10y ? `${data.treasury10y.toFixed(2)}%` : "—",
+                change: data?.treasury10yChange,
+                changeUnit: "bps",
+                desc: data?.treasury10y > 4.5 ? "Hoog — druk op groei-aandelen" : data?.treasury10y > 3.5 ? "Neutraal" : "Laag — gunstig voor tech/groei",
+                color: yColor,
+                note: "Hoge yield = concurrentie voor aandelen"
+              },
+              {
+                label: "USD Index (DXY)",
+                value: data?.dxy ? data.dxy.toFixed(1) : "—",
+                change: data?.dxyChange,
+                desc: data?.dxy > 104 ? "Sterke dollar — headwind voor multinationals" : data?.dxy > 100 ? "Neutraal" : "Zwakke dollar — gunstig voor EM en multinationals",
+                color: data?.dxy > 104 ? "#ff6b6b" : data?.dxy > 100 ? "#f5c842" : "#00e5a0",
+                note: "Sterk = druk op buitenlandse omzet"
+              }
+            ].map(item => (
+              <div key={item.label} style={{ background: "#070707", border: "1px solid #141414", borderRadius: 12, padding: "18px 20px" }}>
+                <div style={{ fontSize: 10, color: "#444", textTransform: "uppercase", letterSpacing: 1.2, marginBottom: 10 }}>{item.label}</div>
+                <div style={{ display: "flex", alignItems: "baseline", gap: 10, marginBottom: 6 }}>
+                  <span style={{ fontFamily: "monospace", fontSize: 24, fontWeight: 700, color: item.color }}>{item.value}</span>
+                  {item.change != null && (
+                    <span style={{ fontFamily: "monospace", fontSize: 12, color: item.change >= 0 ? "#00e5a0" : "#ff6b6b" }}>
+                      {item.change >= 0 ? "+" : ""}{item.change.toFixed(item.changeUnit ? 0 : 2)}{item.changeUnit || "%"}
+                    </span>
+                  )}
+                </div>
+                <div style={{ fontSize: 11, color: "#555", marginBottom: 4 }}>{item.desc}</div>
+                <div style={{ fontSize: 10, color: "#2a2a2a", fontStyle: "italic" }}>{item.note}</div>
+              </div>
+            ))}
+          </div>
+
+          {/* Rationele conclusie */}
+          <div style={{ background: "#070707", border: "1px solid #1a1a1a", borderRadius: 12, padding: "20px 24px" }}>
+            <div style={{ fontSize: 10, color: "#444", textTransform: "uppercase", letterSpacing: 1.2, marginBottom: 14 }}>Rationele marktcontext voor instapbeslissing</div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              {[
+                data?.vix > 30
+                  ? { signal: "✅", text: `VIX op ${data?.vix?.toFixed(1)} — verhoogde angst. Historisch gezien gunstig voor instap in kwaliteitsaandelen.`, color: "#00e5a0" }
+                  : data?.vix < 15
+                  ? { signal: "⚠️", text: `VIX op ${data?.vix?.toFixed(1)} — markt is complacent. Voorzichtigheid geboden bij nieuwe posities.`, color: "#f5c842" }
+                  : { signal: "➡️", text: `VIX op ${data?.vix?.toFixed(1)} — normale volatiliteit. Geen bijzonder signaal.`, color: "#888" },
+
+                data?.fearGreed?.score <= 35
+                  ? { signal: "✅", text: `Fear & Greed op ${data?.fearGreed?.score} (angst). Contrarian signaal — anderen verkopen, jij analyseert rustig.`, color: "#00e5a0" }
+                  : data?.fearGreed?.score >= 75
+                  ? { signal: "⚠️", text: `Fear & Greed op ${data?.fearGreed?.score} (hebzucht). Wacht op correctie of wees selectiever met entries.`, color: "#ff6b6b" }
+                  : { signal: "➡️", text: `Fear & Greed op ${data?.fearGreed?.score} (${data?.fearGreed?.rating || "neutraal"}). Gemengd sentiment.`, color: "#888" },
+
+                data?.treasury10y > 4.5
+                  ? { signal: "⚠️", text: `10jr yield op ${data?.treasury10y?.toFixed(2)}% — hoog. Groei-aandelen (tech/semi) staan extra druk. Hogere discontovoet = lagere fair values.`, color: "#f5c842" }
+                  : { signal: "✅", text: `10jr yield op ${data?.treasury10y?.toFixed(2)}% — acceptabel voor groei-aandelen.`, color: "#00e5a0" },
+              ].filter(Boolean).map((item, i) => (
+                <div key={i} style={{ display: "flex", gap: 12, alignItems: "flex-start" }}>
+                  <span style={{ fontSize: 16 }}>{item.signal}</span>
+                  <span style={{ fontSize: 12, color: item.color, lineHeight: 1.6 }}>{item.text}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── App ───────────────────────────────────────────────────────────────────────
 export default function App() {
   const [tab, setTab] = useState("scanner");
@@ -1148,9 +1543,10 @@ export default function App() {
   };
 
   const TABS = [
-    { id: "scanner", label: "Scanner", icon: "scan" },
+    { id: "markt", label: "Markt", icon: "chart" },
     { id: "shortlist", label: `Shortlist${shortlist.length ? ` (${shortlist.length})` : ""}`, icon: "star" },
     { id: "portfolio", label: "Portfolio", icon: "briefcase" },
+    { id: "scanner", label: "Scanner", icon: "scan" },
     { id: "peg", label: "PEG Chart", icon: "chart" },
     { id: "universum", label: "Universum", icon: "db" },
   ];
@@ -1195,21 +1591,26 @@ export default function App() {
           <>
             <div style={{ marginBottom: 20 }}>
               <h1 style={{ fontSize: 20, fontWeight: 700, color: "#e0e0e0", letterSpacing: -0.3 }}>
+                {tab === "markt" && "Markt Dashboard"}
+                {tab === "shortlist" && "Instapmoment Dashboard"}
                 {tab === "scanner" && "Stock Scanner"}
-                {tab === "shortlist" && "Shortlist"}
                 {tab === "portfolio" && "Portfolio"}
                 {tab === "peg" && "PEG History"}
                 {tab === "universum" && "Scan Universum"}
               </h1>
               <p style={{ color: "#2a2a2a", fontSize: 12, marginTop: 3 }}>
-                {tab === "scanner" && "Scant je portfolio + shortlist · PEG snapshots auto-saved"}
-                {tab === "shortlist" && "Entry targets & thesis · persisted in Supabase"}
-                {tab === "portfolio" && "Live P&L · positions synced to Supabase"}
-                {tab === "peg" && "PEG over time · seed 120 days or build daily via scanner"}
-                {tab === "universum" && "Beheer welke tickers gescand worden · per sector georganiseerd"}
+                {tab === "markt" && "Rationele macro-context · VIX · Fear & Greed · Yields · Sentiment"}
+                {tab === "shortlist" && "52-weeks positie · analyst targets · instapsignaal per stock"}
+                {tab === "scanner" && "Scant universum op PEG en kwaliteitsfilters"}
+                {tab === "portfolio" && "Live P&L · posities gesynchroniseerd met Supabase"}
+                {tab === "peg" && "PEG trendlijn · groeit bij elke scan"}
+                {tab === "universum" && "Beheer welke tickers gescand worden"}
               </p>
             </div>
             {/* Tabs blijven gemount — display:none ipv unmounten zodat scan state bewaard blijft */}
+            <div style={{ display: tab === "markt" ? "block" : "none" }}>
+              <MarktTab/>
+            </div>
             <div style={{ display: tab === "scanner" ? "block" : "none" }}>
               <ScannerTab onAddToShortlist={addToShortlist} portfolioSymbols={positions.map(p => p.symbol)} shortlistSymbols={shortlist.map(s => s.symbol)} scanResults={scanResults} setScanResults={setScanResults}/>
             </div>
