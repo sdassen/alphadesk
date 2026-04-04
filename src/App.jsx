@@ -6,39 +6,38 @@ import {
 } from "recharts";
 
 // ── Config ────────────────────────────────────────────────────────────────────
-const FMP_KEY = "Fs4tEUlKjGXH8TKQO32olCKH9w8gBIgG";
-const FMP = "https://financialmodelingprep.com/api/v3";
 const SB = createClient(
   "https://jnuhyhjwoevoleezshum.supabase.co",
   "sb_publishable_8_2sGbwdbgQmptBsh3iUoQ_Dem-WaKv"
 );
 
-// ── FMP ───────────────────────────────────────────────────────────────────────
-async function fetchQuote(symbol) {
-  const r = await fetch(`${FMP}/quote/${symbol}?apikey=${FMP_KEY}`);
-  const d = await r.json();
-  return d[0] || null;
-}
-async function fetchProfile(symbol) {
-  const r = await fetch(`${FMP}/profile/${symbol}?apikey=${FMP_KEY}`);
-  const d = await r.json();
-  return d[0] || null;
-}
-async function fetchKeyMetrics(symbol) {
-  const r = await fetch(`${FMP}/key-metrics-ttm/${symbol}?apikey=${FMP_KEY}`);
-  const d = await r.json();
-  return d[0] || null;
-}
-async function fetchGrowth(symbol) {
-  const r = await fetch(`${FMP}/financial-growth/${symbol}?limit=1&apikey=${FMP_KEY}`);
-  const d = await r.json();
-  return d[0] || null;
+// ── FMP via serverless proxy (avoids CORS / key exposure) ────────────────────
+const PROXY = "/api/fmp";
+
+async function fmp(path, params = {}) {
+  const qs = new URLSearchParams({ path, ...params }).toString();
+  const r = await fetch(`${PROXY}?${qs}`);
+  return r.json();
 }
 
-// Fetch historical daily prices (free endpoint) for PEG bootstrap
+async function fetchQuote(symbol) {
+  const d = await fmp(`quote/${symbol}`);
+  return Array.isArray(d) ? d[0] : null;
+}
+async function fetchProfile(symbol) {
+  const d = await fmp(`profile/${symbol}`);
+  return Array.isArray(d) ? d[0] : null;
+}
+async function fetchKeyMetrics(symbol) {
+  const d = await fmp(`key-metrics-ttm/${symbol}`);
+  return Array.isArray(d) ? d[0] : null;
+}
+async function fetchGrowth(symbol) {
+  const d = await fmp(`financial-growth/${symbol}`, { limit: 1 });
+  return Array.isArray(d) ? d[0] : null;
+}
 async function fetchHistoricalPrices(symbol, days = 90) {
-  const r = await fetch(`${FMP}/historical-price-full/${symbol}?timeseries=${days}&apikey=${FMP_KEY}`);
-  const d = await r.json();
+  const d = await fmp(`historical-price-full/${symbol}`, { timeseries: days });
   return d.historical || [];
 }
 
@@ -50,6 +49,8 @@ async function fetchFull(symbol) {
   const epsGrowth = growth?.epsgrowth || growth?.epsGrowth || 0;
   const peRatio = quote.pe || null;
   const peg = peRatio && epsGrowth ? peRatio / (epsGrowth * 100) : null;
+  const roic = (metrics?.roicTTM || 0) * 100;
+  const netDebtEbitda = metrics?.netDebtToEBITDATTM ?? null;
   return {
     symbol: symbol.toUpperCase(),
     name: profile?.companyName || quote.name || symbol,
@@ -60,10 +61,12 @@ async function fetchFull(symbol) {
     epsGrowth: epsGrowth * 100,
     revenueGrowth: (growth?.revenueGrowth || 0) * 100,
     grossMargin: (metrics?.grossProfitMarginTTM || 0) * 100,
+    roic,
+    netDebtEbitda,
     marketCap: quote.marketCap,
     sector: profile?.sector || "—",
     logo: profile?.image || null,
-    currentEpsGrowth: epsGrowth, // raw for bootstrap
+    currentEpsGrowth: epsGrowth,
   };
 }
 
@@ -404,14 +407,18 @@ function PEGChartTab({ portfolioSymbols }) {
 }
 
 // ── Scanner ───────────────────────────────────────────────────────────────────
-const COLS = "2fr 1fr 1fr 1.5fr 1fr 1fr 1fr 1fr 90px";
+const COLS = "2fr 1fr 1fr 1.5fr 1fr 1fr 1fr 1fr 1fr 90px";
 const TableHeader = () => (
   <div style={{ display: "grid", gridTemplateColumns: COLS, padding: "10px 20px", borderBottom: "1px solid #1a1a1a" }}>
-    {["Symbol", "Price", "Chg%", "PEG", "P/E", "EPS Grw", "Margin", "Sector", ""].map((h, i) => (
-      <div key={i} style={{ fontSize: 10, color: "#3a3a3a", fontWeight: 700, letterSpacing: 1.2, textTransform: "uppercase", fontFamily: "monospace", textAlign: i === 8 ? "right" : "left" }}>{h}</div>
+    {["Symbol", "Price", "Chg%", "PEG", "P/E", "EPS Grw", "Margin", "ROIC", "ND/EBITDA", ""].map((h, i) => (
+      <div key={i} style={{ fontSize: 10, color: "#3a3a3a", fontWeight: 700, letterSpacing: 1.2, textTransform: "uppercase", fontFamily: "monospace", textAlign: i === 9 ? "right" : "left" }}>{h}</div>
     ))}
   </div>
 );
+
+const roicColor = (v) => v == null ? "#666" : v >= 20 ? "#00e5a0" : v >= 15 ? "#f5c842" : "#ff6b6b";
+const ndColor = (v) => v == null ? "#666" : v <= 1 ? "#00e5a0" : v <= 2 ? "#f5c842" : "#ff6b6b";
+
 const StockRow = ({ stock, actions }) => (
   <div style={{ display: "grid", gridTemplateColumns: COLS, alignItems: "center", padding: "13px 20px", borderBottom: "1px solid #0e0e0e", transition: "background 0.15s" }}
     onMouseEnter={e => e.currentTarget.style.background = "#0b0b0b"}
@@ -429,7 +436,8 @@ const StockRow = ({ stock, actions }) => (
     <div style={{ fontFamily: "monospace", fontSize: 12, color: "#666" }}>{fmt.num(stock.pe)}</div>
     <div style={{ fontFamily: "monospace", fontSize: 12, color: "#666" }}>{fmt.pct(stock.epsGrowth)}</div>
     <div style={{ fontFamily: "monospace", fontSize: 12, color: "#666" }}>{fmt.pct(stock.grossMargin)}</div>
-    <div><Badge color={stock.peg < 1 ? "#00e5a0" : stock.peg < 1.5 ? "#f5c842" : "#ff6b6b"}>{(stock.sector || "—").split(" ")[0]}</Badge></div>
+    <div style={{ fontFamily: "monospace", fontSize: 12, color: roicColor(stock.roic), fontWeight: 600 }}>{stock.roic != null ? fmt.pct(stock.roic) : "—"}</div>
+    <div style={{ fontFamily: "monospace", fontSize: 12, color: ndColor(stock.netDebtEbitda), fontWeight: 600 }}>{stock.netDebtEbitda != null ? fmt.num(stock.netDebtEbitda) : "—"}</div>
     <div style={{ display: "flex", gap: 5, justifyContent: "flex-end" }}>
       {actions.map((a, i) => (
         <button key={i} onClick={() => a.fn(stock)} title={a.label}
@@ -445,7 +453,7 @@ const StockRow = ({ stock, actions }) => (
 
 function ScannerTab({ onAddToShortlist }) {
   const [input, setInput] = useState("ASML, TSM, MU, MRVL, POWL, CLS, NVDA, AMD, AMAT, LRCX");
-  const [filters, setFilters] = useState({ pegMax: 2, peMax: 40, epsGrowthMin: 10, grossMarginMin: 30 });
+  const [filters, setFilters] = useState({ pegMax: 2, peMax: 40, epsGrowthMin: 10, grossMarginMin: 30, roicMin: 15, netDebtEbitdaMax: 2 });
   const [results, setResults] = useState([]);
   const [loading, setLoading] = useState(false);
   const [progress, setProgress] = useState("");
@@ -470,7 +478,9 @@ function ScannerTab({ onAddToShortlist }) {
     (s.peg == null || s.peg <= filters.pegMax) &&
     (s.pe == null || s.pe <= filters.peMax) &&
     s.epsGrowth >= filters.epsGrowthMin &&
-    s.grossMargin >= filters.grossMarginMin
+    s.grossMargin >= filters.grossMarginMin &&
+    (s.roic == null || s.roic >= filters.roicMin) &&
+    (s.netDebtEbitda == null || s.netDebtEbitda <= filters.netDebtEbitdaMax)
   );
 
   return (
@@ -488,7 +498,7 @@ function ScannerTab({ onAddToShortlist }) {
         </button>
       </div>
       <div style={{ display: "flex", gap: 12, marginBottom: 20, flexWrap: "wrap" }}>
-        {[["PEG ≤", "pegMax", 0.1], ["P/E ≤", "peMax", 1], ["EPS Grw ≥%", "epsGrowthMin", 1], ["Gross Mgn ≥%", "grossMarginMin", 1]].map(([label, key, step]) => (
+        {[["PEG ≤", "pegMax", 0.1], ["P/E ≤", "peMax", 1], ["EPS Grw ≥%", "epsGrowthMin", 1], ["Gross Mgn ≥%", "grossMarginMin", 1], ["ROIC ≥%", "roicMin", 1], ["ND/EBITDA ≤", "netDebtEbitdaMax", 0.1]].map(([label, key, step]) => (
           <div key={key}>
             <div style={{ fontSize: 10, color: "#444", letterSpacing: 1, textTransform: "uppercase", marginBottom: 4 }}>{label}</div>
             <input type="number" step={step} value={filters[key]} onChange={e => setFilters(p => ({ ...p, [key]: parseFloat(e.target.value) }))}
