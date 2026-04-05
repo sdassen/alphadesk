@@ -202,43 +202,13 @@ async function fetchFull(symbol) {
   };
 }
 
-// ── FMP data fetch ────────────────────────────────────────────────────────────
-async function fetchFMP(symbol) {
+// ── Finnhub data fetch ────────────────────────────────────────────────────────
+async function fetchFinnhub(symbol) {
   try {
-    // Fetch both key-metrics and ratios-ttm in parallel
-    const [kmRes, rttmRes] = await Promise.all([
-      fetch(`/api/fmp?symbol=${symbol}&endpoint=key-metrics`),
-      fetch(`/api/fmp?symbol=${symbol}&endpoint=ratios-ttm`),
-    ]);
-    const km = await kmRes.json();
-    const rttm = await rttmRes.json();
-
-    if (km.error) return { error: km.error };
-
-    const d = km.data || {};
-    const r = rttm.data || {};
-
-    // FMP key-metrics field names
-    const peRatio = d.peRatio || null;
-    const pegRatio = d.pegRatio || null; // FMP pre-calculates this
-    const forwardPE = d.priceEarningsToGrowthRatio ? null : (r.priceEarningsRatioTTM || null); // fallback
-    const evEbitda = d.enterpriseValueOverEBITDA || null;
-    const epsGrowth = d.earningsYield ? null : null; // not directly available in key-metrics
-
-    return {
-      source: "FMP",
-      peRatio,
-      pegRatio,        // This is FMP's pre-calculated PEG — most reliable
-      evEbitda,
-      priceToBook: d.pbRatio || null,
-      roe: d.roe ? d.roe * 100 : null,
-      fcfYield: d.freeCashFlowYield ? d.freeCashFlowYield * 100 : null,
-      debtToEquity: d.debtToEquity || null,
-      // TTM ratios
-      peTTM: r.priceEarningsRatioTTM || null,
-      pegTTM: r.priceEarningsGrowthRatioTTM || null,
-      grossMarginTTM: r.grossProfitMarginTTM ? r.grossProfitMarginTTM * 100 : null,
-    };
+    const r = await fetch(`/api/finnhub?symbol=${symbol}`);
+    const json = await r.json();
+    if (json.error) return { error: json.error };
+    return json.data || { error: "No data" };
   } catch (e) {
     return { error: e.message };
   }
@@ -579,9 +549,9 @@ function ShortlistTab({ shortlist, setShortlist }) {
     setRefreshing(true);
     const out = {};
     for (const item of shortlist) {
-      const [d, fmpData] = await Promise.all([
+      const [d, finnhubData] = await Promise.all([
         fetchFull(item.symbol),
-        fetchFMP(item.symbol),
+        fetchFinnhub(item.symbol),
       ]);
       if (d) {
         const sd = await yahooSummary(item.symbol);
@@ -594,7 +564,7 @@ function ShortlistTab({ shortlist, setShortlist }) {
           analystLow: fin?.targetLowPrice?.raw || null,
           numAnalysts: fin?.numberOfAnalystOpinions?.raw || null,
           recommendation: fin?.recommendationKey || null,
-          fmp: fmpData?.error ? null : fmpData,
+          fmp: finnhubData?.error ? null : { ...finnhubData, source: "Finnhub" },
         };
         // Get 52w data from quote
         const qd = await yahooQuote(item.symbol);
@@ -782,7 +752,7 @@ function ShortlistTab({ shortlist, setShortlist }) {
                 ))}
               </div>
 
-              {/* FMP vs Yahoo PEG comparison */}
+              {/* Finnhub vs Yahoo PEG comparison */}
               {s?.fmp && (
                 <div style={{ background: "#0a0a0a", borderRadius: 8, padding: "10px 12px", marginBottom: 12 }}>
                   <div style={{ fontSize: 9, color: "#333", textTransform: "uppercase", letterSpacing: 1, marginBottom: 8 }}>PEG source comparison</div>
@@ -797,23 +767,36 @@ function ShortlistTab({ shortlist, setShortlist }) {
                     </div>
                     {/* Divider */}
                     <div style={{ width: 1, background: "#1a1a1a", alignSelf: "stretch" }}/>
-                    {/* FMP PEG */}
+                    {/* Finnhub PEG */}
                     <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-                      <span style={{ fontSize: 9, color: "#444" }}>FMP (pre-calculated)</span>
-                      <span style={{ fontFamily: "monospace", fontSize: 14, fontWeight: 700, color: pegColor(s.fmp.pegRatio ?? s.fmp.pegTTM) }}>
-                        {s.fmp.pegRatio != null ? fmt.num(s.fmp.pegRatio)
-                          : s.fmp.pegTTM != null ? fmt.num(s.fmp.pegTTM)
+                      <span style={{ fontSize: 9, color: "#444" }}>Finnhub (independent)</span>
+                      <span style={{ fontFamily: "monospace", fontSize: 14, fontWeight: 700, color: pegColor(s.fmp.pegAnnual ?? s.fmp.pegQuarterly) }}>
+                        {s.fmp.pegAnnual != null ? fmt.num(s.fmp.pegAnnual)
+                          : s.fmp.pegQuarterly != null ? fmt.num(s.fmp.pegQuarterly)
                           : "—"}
                       </span>
                       <span style={{ fontSize: 9, color: "#2a2a2a" }}>
-                        {s.fmp.pegRatio != null ? "key-metrics" : s.fmp.pegTTM != null ? "TTM" : "unavailable"}
+                        {s.fmp.pegAnnual != null ? "annual" : s.fmp.pegQuarterly != null ? "quarterly" : "unavailable"}
                       </span>
                     </div>
-                    {/* Delta */}
-                    {s?.peg != null && (s.fmp.pegRatio != null || s.fmp.pegTTM != null) && (() => {
-                      const fmpPeg = s.fmp.pegRatio ?? s.fmp.pegTTM;
-                      const delta = Math.abs(s.peg - fmpPeg);
-                      const pct = (delta / Math.max(s.peg, fmpPeg)) * 100;
+                    {/* Extra Finnhub metrics */}
+                    {s.fmp.epsGrowth3Y != null && (
+                      <>
+                        <div style={{ width: 1, background: "#1a1a1a", alignSelf: "stretch" }}/>
+                        <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                          <span style={{ fontSize: 9, color: "#444" }}>EPS Growth 3Y</span>
+                          <span style={{ fontFamily: "monospace", fontSize: 14, fontWeight: 700, color: "#888" }}>
+                            {fmt.pct(s.fmp.epsGrowth3Y)}
+                          </span>
+                          <span style={{ fontSize: 9, color: "#2a2a2a" }}>Finnhub CAGR</span>
+                        </div>
+                      </>
+                    )}
+                    {/* Agreement indicator */}
+                    {s?.peg != null && (s.fmp.pegAnnual != null || s.fmp.pegQuarterly != null) && (() => {
+                      const fhPeg = s.fmp.pegAnnual ?? s.fmp.pegQuarterly;
+                      const delta = Math.abs(s.peg - fhPeg);
+                      const pct = (delta / Math.max(s.peg, fhPeg)) * 100;
                       const agree = pct < 20;
                       return (
                         <div style={{ display: "flex", flexDirection: "column", gap: 2, marginLeft: "auto" }}>
@@ -829,7 +812,7 @@ function ShortlistTab({ shortlist, setShortlist }) {
                 </div>
               )}
               {s?.fmp === null && (
-                <div style={{ fontSize: 10, color: "#2a2a2a", marginBottom: 12, fontStyle: "italic" }}>FMP unavailable — Yahoo only</div>
+                <div style={{ fontSize: 10, color: "#2a2a2a", marginBottom: 12, fontStyle: "italic" }}>Add FINNHUB_API_KEY to Vercel to enable second source</div>
               )}
 
               {/* Analyst consensus */}
