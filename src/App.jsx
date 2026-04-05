@@ -222,12 +222,19 @@ const db = {
 
   async getPortfolio() {
     const { data } = await SB.from("portfolio").select("*").order("created_at", { ascending: true });
-    return (data || []).map(r => ({ symbol: r.symbol, shares: r.shares, avgCost: r.avg_cost, thesis: r.thesis }));
+    return (data || []).map(r => ({
+      symbol: r.symbol, shares: r.shares, avgCost: r.avg_cost, thesis: r.thesis,
+      assetType: r.asset_type || "stock", currency: r.currency || "USD",
+      yahooSymbol: r.yahoo_symbol || r.symbol,
+    }));
   },
   async upsertPortfolio(pos) {
     await SB.from("portfolio").upsert({
       symbol: pos.symbol, shares: pos.shares,
-      avg_cost: pos.avgCost, thesis: pos.thesis || ""
+      avg_cost: pos.avgCost, thesis: pos.thesis || "",
+      asset_type: pos.assetType || "stock",
+      currency: pos.currency || "USD",
+      yahoo_symbol: pos.yahooSymbol || null,
     }, { onConflict: "symbol" });
   },
   async deletePortfolio(symbol) { await SB.from("portfolio").delete().eq("symbol", symbol); },
@@ -870,32 +877,36 @@ Return ONLY valid JSON:
     const qOut = {};
     const fOut = {};
     for (const p of positions) {
-      const data = await yahooQuote(p.symbol);
+      const ticker = p.yahooSymbol || p.symbol;
+      const data = await yahooQuote(ticker);
       const meta = data?.chart?.result?.[0]?.meta;
       if (meta) qOut[p.symbol] = {
         price: meta.regularMarketPrice,
         week52High: meta.fiftyTwoWeekHigh,
         week52Low: meta.fiftyTwoWeekLow,
+        currency: meta.currency || p.currency || "USD",
       };
-      // Get fundamentals for rebalancing analysis
-      try {
-        const sd = await yahooSummary(p.symbol);
-        const fin = sd?.quoteSummary?.result?.[0];
-        const fd = fin?.financialData || {};
-        const ks = fin?.defaultKeyStatistics || {};
-        const sdet = fin?.summaryDetail || {};
-        fOut[p.symbol] = {
-          forwardPE: sdet.forwardPE?.raw || ks.forwardPE?.raw,
-          trailingPE: sdet.trailingPE?.raw,
-          earningsGrowth: fd.earningsGrowth?.raw,
-          forwardEps: ks.forwardEps?.raw,
-          trailingEps: ks.trailingEps?.raw,
-          targetMeanPrice: fd.targetMeanPrice?.raw,
-          recommendation: fd.recommendationKey,
-          grossMargins: fd.grossMargins?.raw,
-          revenueGrowth: fd.revenueGrowth?.raw,
-        };
-      } catch {}
+      // Only fetch fundamentals for stocks (ETFs don't have PEG/PE etc)
+      if (p.assetType === "stock") {
+        try {
+          const sd = await yahooSummary(ticker);
+          const fin = sd?.quoteSummary?.result?.[0];
+          const fd = fin?.financialData || {};
+          const ks = fin?.defaultKeyStatistics || {};
+          const sdet = fin?.summaryDetail || {};
+          fOut[p.symbol] = {
+            forwardPE: sdet.forwardPE?.raw || ks.forwardPE?.raw,
+            trailingPE: sdet.trailingPE?.raw,
+            earningsGrowth: fd.earningsGrowth?.raw,
+            forwardEps: ks.forwardEps?.raw,
+            trailingEps: ks.trailingEps?.raw,
+            targetMeanPrice: fd.targetMeanPrice?.raw,
+            recommendation: fd.recommendationKey,
+            grossMargins: fd.grossMargins?.raw,
+            revenueGrowth: fd.revenueGrowth?.raw,
+          };
+        } catch {}
+      }
     }
     setQuotes(qOut);
     setFundamentals(fOut);
@@ -1134,15 +1145,15 @@ Return ONLY valid JSON, no other text:
       )}
 
       {/* Position table */}
-      <div style={{ background: "#070707", borderRadius: 12, border: "1px solid #141414", overflow: "hidden" }}>
-        <div style={{ display: "grid", gridTemplateColumns: "1.5fr 1fr 1fr 1fr 1fr 1fr 1fr 1fr 60px", padding: "10px 20px", borderBottom: "1px solid #141414" }}>
-          {["Position", "Shares", "Avg $", "Price", "Value", "P&L", "Return", "Weight", ""].map((h, i) => (
-            <div key={i} style={{ fontSize: 10, color: "#3a3a3a", fontWeight: 700, letterSpacing: 1.2, textTransform: "uppercase", fontFamily: "monospace", textAlign: i === 8 ? "right" : "left" }}>{h}</div>
-          ))}
-        </div>
-        {positions.map(p => {
+      {(() => {
+        const stocks = positions.filter(p => p.assetType !== "etf");
+        const etfs = positions.filter(p => p.assetType === "etf");
+
+        const renderRow = (p) => {
           const q = quotes[p.symbol];
           const price = q?.price || 0;
+          const curr = q?.currency || p.currency || "USD";
+          const sym = curr === "EUR" ? "€" : "$";
           const value = p.shares * price;
           const cost = p.shares * p.avgCost;
           const pl = value - cost;
@@ -1157,21 +1168,24 @@ Return ONLY valid JSON, no other text:
               onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
               <div style={{ display: "grid", gridTemplateColumns: "1.5fr 1fr 1fr 1fr 1fr 1fr 1fr 1fr 60px", padding: "12px 20px" }}>
                 <div>
-                  <div style={{ fontFamily: "monospace", fontWeight: 700, fontSize: 13, color: "#e0e0e0" }}>{p.symbol}</div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                    <span style={{ fontFamily: "monospace", fontWeight: 700, fontSize: 13, color: "#e0e0e0" }}>{p.symbol}</span>
+                    {p.assetType === "etf" && <span style={{ fontSize: 9, color: "#555", border: "1px solid #222", borderRadius: 3, padding: "1px 5px" }}>ETF</span>}
+                    {curr === "EUR" && <span style={{ fontSize: 9, color: "#444", fontFamily: "monospace" }}>€</span>}
+                  </div>
                   {p.thesis && <div style={{ fontSize: 10, color: "#3a3a3a", marginTop: 2, maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.thesis}</div>}
                 </div>
                 <div style={{ fontFamily: "monospace", color: "#666", fontSize: 13 }}>{p.shares}</div>
-                <div style={{ fontFamily: "monospace", color: "#666", fontSize: 13 }}>{fmt.price(p.avgCost)}</div>
-                <div style={{ fontFamily: "monospace", color: "#d0d0d0", fontSize: 13 }}>{price ? fmt.price(price) : <Spinner/>}</div>
-                <div style={{ fontFamily: "monospace", color: "#888", fontSize: 13 }}>{value ? `$${value.toFixed(0)}` : "—"}</div>
-                <div style={{ fontFamily: "monospace", color: pl >= 0 ? "#00e5a0" : "#ff6b6b", fontSize: 13, fontWeight: 600 }}>{pl ? `${pl >= 0 ? "+" : ""}$${pl.toFixed(0)}` : "—"}</div>
+                <div style={{ fontFamily: "monospace", color: "#666", fontSize: 13 }}>{sym}{p.avgCost.toFixed(2)}</div>
+                <div style={{ fontFamily: "monospace", color: "#d0d0d0", fontSize: 13 }}>{price ? `${sym}${price.toFixed(2)}` : <Spinner/>}</div>
+                <div style={{ fontFamily: "monospace", color: "#888", fontSize: 13 }}>{value ? `${sym}${value.toFixed(0)}` : "—"}</div>
+                <div style={{ fontFamily: "monospace", color: pl >= 0 ? "#00e5a0" : "#ff6b6b", fontSize: 13, fontWeight: 600 }}>{pl ? `${pl >= 0 ? "+" : ""}${sym}${Math.abs(pl).toFixed(0)}` : "—"}</div>
                 <div style={{ fontFamily: "monospace", color: rt >= 0 ? "#00e5a0" : "#ff6b6b", fontSize: 13, fontWeight: 600 }}>{rt ? fmt.pct(rt) : "—"}</div>
                 <div style={{ fontFamily: "monospace", color: "#666", fontSize: 13 }}>{weight ? `${weight.toFixed(1)}%` : "—"}</div>
                 <div style={{ display: "flex", justifyContent: "flex-end" }}>
                   <button onClick={() => remove(p.symbol)} style={{ background: "#111", border: "1px solid #1e1e1e", borderRadius: 6, color: "#444", padding: "5px 7px", cursor: "pointer" }}><Icon name="trash" size={12}/></button>
                 </div>
               </div>
-              {/* 52-week mini bar */}
               {week52Pct !== null && (
                 <div style={{ padding: "0 20px 10px", display: "flex", alignItems: "center", gap: 8 }}>
                   <span style={{ fontSize: 9, color: "#2a2a2a", fontFamily: "monospace", whiteSpace: "nowrap" }}>52W LOW</span>
@@ -1185,8 +1199,35 @@ Return ONLY valid JSON, no other text:
               )}
             </div>
           );
-        })}
-      </div>
+        };
+
+        const colHeader = (
+          <div style={{ display: "grid", gridTemplateColumns: "1.5fr 1fr 1fr 1fr 1fr 1fr 1fr 1fr 60px", padding: "10px 20px", borderBottom: "1px solid #141414" }}>
+            {["Position", "Shares", "Avg", "Price", "Value", "P&L", "Return", "Weight", ""].map((h, i) => (
+              <div key={i} style={{ fontSize: 10, color: "#3a3a3a", fontWeight: 700, letterSpacing: 1.2, textTransform: "uppercase", fontFamily: "monospace", textAlign: i === 8 ? "right" : "left" }}>{h}</div>
+            ))}
+          </div>
+        );
+
+        return (
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            {/* Stocks */}
+            <div style={{ background: "#070707", borderRadius: 12, border: "1px solid #141414", overflow: "hidden" }}>
+              <div style={{ padding: "10px 20px", borderBottom: "1px solid #141414", fontSize: 10, color: "#444", textTransform: "uppercase", letterSpacing: 1.2 }}>Stocks</div>
+              {colHeader}
+              {stocks.map(renderRow)}
+            </div>
+            {/* ETFs */}
+            {etfs.length > 0 && (
+              <div style={{ background: "#070707", borderRadius: 12, border: "1px solid #141414", overflow: "hidden" }}>
+                <div style={{ padding: "10px 20px", borderBottom: "1px solid #141414", fontSize: 10, color: "#444", textTransform: "uppercase", letterSpacing: 1.2 }}>ETFs</div>
+                {colHeader}
+                {etfs.map(renderRow)}
+              </div>
+            )}
+          </div>
+        );
+      })()}
     </div>
   );
 }
