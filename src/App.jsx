@@ -59,52 +59,62 @@ async function fetchFull(symbol) {
   const sd = fin?.summaryDetail || {};
   const ap = fin?.assetProfile || {};
 
-  // ── PEG: consistent pairing of PE and growth ─────────────────────────────
+  // ── PEG: robust multi-source calculation ─────────────────────────────────
   const trailingEps = ks.trailingEps?.raw || null;
   const forwardEps = ks.forwardEps?.raw || null;
   const forwardPE = sd.forwardPE?.raw || ks.forwardPE?.raw || null;
   const trailingPE = sd.trailingPE?.raw || ks.trailingPE?.raw || null;
+
+  // Detect recent stock split — data may be unreliable for 1-2 weeks post-split
+  const lastSplitDate = ks.lastSplitDate?.raw || null;
+  const daysSinceSplit = lastSplitDate
+    ? (Date.now() / 1000 - lastSplitDate) / 86400 : 999;
+  const recentSplit = daysSinceSplit < 14;
 
   // Forward EPS growth (1yr analyst estimate)
   const forwardGrowth = trailingEps && forwardEps && trailingEps > 0
     ? (forwardEps - trailingEps) / Math.abs(trailingEps)
     : null;
 
-  // TTM earnings growth (YoY actuals)
-  const ttmGrowth = fd.earningsGrowth?.raw || null;
-  const qtrGrowth = ks.earningsQuarterlyGrowth?.raw || null;
-  const revGrowth = fd.revenueGrowth?.raw || null;
+  // Multiple growth sources
+  const ttmGrowth = fd.earningsGrowth?.raw || null;       // YoY TTM actuals
+  const qtrGrowth = ks.earningsQuarterlyGrowth?.raw || null; // QoQ
+  const revGrowth = fd.revenueGrowth?.raw || null;         // Revenue fallback
 
-  // Key insight: trailing PE > 100 means earnings base is distorted (e.g. POWL had
-  // a bad year). In that case we MUST use forward PE + forward growth together.
-  // Mixing forward PE with TTM growth gives a wrong PEG.
-  const trailingDistorted = !trailingPE || trailingPE <= 0 || trailingPE > 100;
+  // Sanity check: if trailing PE is wildly inconsistent with forward PE,
+  // trailing earnings base is distorted (bad year, split timing, etc.)
+  const trailingDistorted = !trailingPE || trailingPE <= 0 || trailingPE > 100
+    || (forwardPE && trailingPE > forwardPE * 2.5);
 
   let epsGrowthRaw, pegSource, usedPE;
 
-  if (trailingDistorted && forwardPE && forwardGrowth !== null && forwardGrowth > 0) {
-    // Distorted trailing: use forward PE + forward growth (paired consistently)
-    usedPE = forwardPE;
-    if (forwardGrowth <= 1.0) {
-      epsGrowthRaw = forwardGrowth;
-      pegSource = "fwd";
+  if (recentSplit) {
+    // Post-split: Yahoo data unreliable — use forward PE / forward EPS growth only
+    // if we have it, else mark as unreliable
+    if (forwardPE && forwardGrowth !== null && forwardGrowth > 0) {
+      usedPE = forwardPE;
+      epsGrowthRaw = forwardGrowth <= 1.0 ? forwardGrowth : Math.sqrt(forwardGrowth);
+      pegSource = forwardGrowth <= 1.0 ? "fwd*" : "fwd↓*"; // * = post-split caution
     } else {
-      // >100% forward growth: normalize with sqrt to avoid absurdly low PEG
-      epsGrowthRaw = Math.sqrt(forwardGrowth);
-      pegSource = "fwd↓";
+      usedPE = null; // can't calculate reliably
+      epsGrowthRaw = 0;
+      pegSource = "split!";
     }
+  } else if (trailingDistorted && forwardPE && forwardGrowth !== null && forwardGrowth > 0) {
+    // Distorted trailing: MUST pair forward PE with forward growth consistently
+    usedPE = forwardPE;
+    epsGrowthRaw = forwardGrowth <= 1.0 ? forwardGrowth : Math.sqrt(forwardGrowth);
+    pegSource = forwardGrowth <= 1.0 ? "fwd" : "fwd↓";
   } else if (forwardGrowth !== null && forwardGrowth > 0 && forwardGrowth <= 1.0) {
     // Clean trailing PE + moderate forward growth
     usedPE = trailingPE;
     epsGrowthRaw = forwardGrowth;
     pegSource = "fwd";
   } else if (ttmGrowth !== null && ttmGrowth > 0 && ttmGrowth <= 2.0) {
-    // Fall back to TTM actuals
     usedPE = trailingPE;
     epsGrowthRaw = ttmGrowth;
     pegSource = "ttm";
   } else if (forwardGrowth !== null && forwardGrowth > 1.0) {
-    // High forward growth with clean trailing PE
     usedPE = trailingPE;
     epsGrowthRaw = Math.sqrt(forwardGrowth);
     pegSource = "fwd↓";
@@ -120,7 +130,10 @@ async function fetchFull(symbol) {
 
   const epsGrowthPct = epsGrowthRaw * 100;
   const effectivePE = usedPE || forwardPE;
-  const peg = effectivePE && epsGrowthPct > 0 ? effectivePE / epsGrowthPct : null;
+  // PEG is null if post-split data unreliable or no valid inputs
+  const peg = (pegSource === "split!" || !effectivePE || epsGrowthPct <= 0)
+    ? null
+    : effectivePE / epsGrowthPct;
 
   // ── Winstgevendheid & cashflow ────────────────────────────────────────────
   const grossMargin = (fd.grossMargins?.raw || 0) * 100;
@@ -184,6 +197,8 @@ async function fetchFull(symbol) {
     sector: ap.sector || "—",
     logo: `https://logo.clearbit.com/${ap.website?.replace(/https?:\/\//, "").split("/")[0]}`,
     currentEpsGrowth: epsGrowthRaw,
+    recentSplit,
+    pegSource,
   };
 }
 
@@ -327,14 +342,23 @@ const Spinner = ({ size = 15 }) => (
 const Badge = ({ children, color = "#00e5a0" }) => (
   <span style={{ background: color + "22", color, border: `1px solid ${color}44`, borderRadius: 4, padding: "2px 7px", fontSize: 11, fontWeight: 700, letterSpacing: 0.5 }}>{children}</span>
 );
-const PEGBar = ({ peg }) => (
-  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-    <div style={{ flex: 1, height: 3, background: "#1a1a1a", borderRadius: 2, overflow: "hidden" }}>
-      <div style={{ width: `${(Math.min(Math.max(peg || 0, 0), 3) / 3) * 100}%`, height: "100%", background: pegColor(peg), borderRadius: 2, transition: "width 0.5s ease" }}/>
+const PEGBar = ({ peg, source }) => {
+  const isSplit = source === "split!";
+  const isPostSplit = source?.includes("*");
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+      <div style={{ flex: 1, height: 3, background: "#1a1a1a", borderRadius: 2, overflow: "hidden" }}>
+        <div style={{ width: isSplit ? "0%" : `${(Math.min(Math.max(peg || 0, 0), 3) / 3) * 100}%`, height: "100%", background: isSplit ? "#555" : pegColor(peg), borderRadius: 2, transition: "width 0.5s ease" }}/>
+      </div>
+      {isSplit
+        ? <span style={{ color: "#f5c842", fontWeight: 700, fontSize: 11, fontFamily: "monospace" }} title="Recent stock split — data unreliable">split⚠</span>
+        : <span style={{ color: pegColor(peg), fontWeight: 700, fontSize: 13, minWidth: 36, textAlign: "right", fontFamily: "monospace" }} title={`Source: ${source || "—"}${isPostSplit ? " (post-split caution)" : ""}`}>
+            {fmt.num(peg)}{isPostSplit ? "⚠" : ""}
+          </span>
+      }
     </div>
-    <span style={{ color: pegColor(peg), fontWeight: 700, fontSize: 13, minWidth: 36, textAlign: "right", fontFamily: "monospace" }}>{fmt.num(peg)}</span>
-  </div>
-);
+  );
+};
 
 // ── PEG Chart Tab ─────────────────────────────────────────────────────────────
 function PEGChartTab({ portfolioSymbols }) {
@@ -694,13 +718,18 @@ function ShortlistTab({ shortlist, setShortlist }) {
               {/* Key metrics grid */}
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 8, marginBottom: 14 }}>
                 {[
-                  ["PEG", fmt.num(s?.peg), pegColor(s?.peg)],
-                  ["fwd P/E", fmt.num(s?.forwardPE), s?.forwardPE < 25 ? "#00e5a0" : s?.forwardPE < 40 ? "#f5c842" : "#ff6b6b"],
-                  ["EPS Grw", fmt.pct(s?.epsGrowth), "#888"],
-                  ["Gross Mgn", fmt.pct(s?.grossMargin), "#888"],
-                ].map(([label, val, color]) => (
-                  <div key={label} style={{ background: "#0a0a0a", borderRadius: 7, padding: "8px 10px" }}>
-                    <div style={{ fontSize: 9, color: "#333", textTransform: "uppercase", letterSpacing: 1, marginBottom: 3 }}>{label}</div>
+                  ["PEG", s?.peg != null ? (s.recentSplit ? "split⚠" : fmt.num(s?.peg)) : "—",
+                   s?.recentSplit ? "#f5c842" : pegColor(s?.peg),
+                   s?.pegSource ? `source: ${s.pegSource}` : ""],
+                  ["fwd P/E", fmt.num(s?.forwardPE), s?.forwardPE < 25 ? "#00e5a0" : s?.forwardPE < 40 ? "#f5c842" : "#ff6b6b", ""],
+                  ["EPS Grw", fmt.pct(s?.epsGrowth), "#888", ""],
+                  ["Gross Mgn", fmt.pct(s?.grossMargin), "#888", ""],
+                ].map(([label, val, color, hint]) => (
+                  <div key={label} style={{ background: "#0a0a0a", borderRadius: 7, padding: "8px 10px" }} title={hint}>
+                    <div style={{ fontSize: 9, color: "#333", textTransform: "uppercase", letterSpacing: 1, marginBottom: 3 }}>
+                      {label}
+                      {hint && <span style={{ marginLeft: 4, color: "#2a2a2a" }}>ⓘ</span>}
+                    </div>
                     <div style={{ fontFamily: "monospace", fontSize: 13, fontWeight: 600, color }}>{val}</div>
                   </div>
                 ))}
