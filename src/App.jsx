@@ -202,7 +202,49 @@ async function fetchFull(symbol) {
   };
 }
 
-async function fetchHistoricalPrices(symbol, days = 120) {
+// ── FMP data fetch ────────────────────────────────────────────────────────────
+async function fetchFMP(symbol) {
+  try {
+    // Fetch both key-metrics and ratios-ttm in parallel
+    const [kmRes, rttmRes] = await Promise.all([
+      fetch(`/api/fmp?symbol=${symbol}&endpoint=key-metrics`),
+      fetch(`/api/fmp?symbol=${symbol}&endpoint=ratios-ttm`),
+    ]);
+    const km = await kmRes.json();
+    const rttm = await rttmRes.json();
+
+    if (km.error) return { error: km.error };
+
+    const d = km.data || {};
+    const r = rttm.data || {};
+
+    // FMP key-metrics field names
+    const peRatio = d.peRatio || null;
+    const pegRatio = d.pegRatio || null; // FMP pre-calculates this
+    const forwardPE = d.priceEarningsToGrowthRatio ? null : (r.priceEarningsRatioTTM || null); // fallback
+    const evEbitda = d.enterpriseValueOverEBITDA || null;
+    const epsGrowth = d.earningsYield ? null : null; // not directly available in key-metrics
+
+    return {
+      source: "FMP",
+      peRatio,
+      pegRatio,        // This is FMP's pre-calculated PEG — most reliable
+      evEbitda,
+      priceToBook: d.pbRatio || null,
+      roe: d.roe ? d.roe * 100 : null,
+      fcfYield: d.freeCashFlowYield ? d.freeCashFlowYield * 100 : null,
+      debtToEquity: d.debtToEquity || null,
+      // TTM ratios
+      peTTM: r.priceEarningsRatioTTM || null,
+      pegTTM: r.priceEarningsGrowthRatioTTM || null,
+      grossMarginTTM: r.grossProfitMarginTTM ? r.grossProfitMarginTTM * 100 : null,
+    };
+  } catch (e) {
+    return { error: e.message };
+  }
+}
+
+
   const to = Math.floor(Date.now() / 1000);
   const from = to - days * 86400;
   const r = await fetch(`/api/yahoo?symbol=${symbol}&endpoint=history&from=${from}&to=${to}`);
@@ -537,25 +579,30 @@ function ShortlistTab({ shortlist, setShortlist }) {
     setRefreshing(true);
     const out = {};
     for (const item of shortlist) {
-      const d = await fetchFull(item.symbol);
+      const [d, fmpData] = await Promise.all([
+        fetchFull(item.symbol),
+        fetchFMP(item.symbol),
+      ]);
       if (d) {
-        // Get 52-week data via Yahoo quote
-        const qd = await yahooQuote(item.symbol);
-        const meta = qd?.chart?.result?.[0]?.meta;
-        out[item.symbol] = {
-          ...d,
-          week52High: meta?.fiftyTwoWeekHigh || null,
-          week52Low: meta?.fiftyTwoWeekLow || null,
-          analystTarget: null, // comes from quoteSummary financialData.targetMeanPrice
-        };
-        // Get analyst target from summary
         const sd = await yahooSummary(item.symbol);
         const fin = sd?.quoteSummary?.result?.[0]?.financialData;
-        out[item.symbol].analystTarget = fin?.targetMeanPrice?.raw || null;
-        out[item.symbol].analystHigh = fin?.targetHighPrice?.raw || null;
-        out[item.symbol].analystLow = fin?.targetLowPrice?.raw || null;
-        out[item.symbol].numAnalysts = fin?.numberOfAnalystOpinions?.raw || null;
-        out[item.symbol].recommendation = fin?.recommendationKey || null;
+        out[item.symbol] = {
+          ...d,
+          week52High: d.price ? null : null, // comes from meta below
+          analystTarget: fin?.targetMeanPrice?.raw || null,
+          analystHigh: fin?.targetHighPrice?.raw || null,
+          analystLow: fin?.targetLowPrice?.raw || null,
+          numAnalysts: fin?.numberOfAnalystOpinions?.raw || null,
+          recommendation: fin?.recommendationKey || null,
+          fmp: fmpData?.error ? null : fmpData,
+        };
+        // Get 52w data from quote
+        const qd = await yahooQuote(item.symbol);
+        const meta = qd?.chart?.result?.[0]?.meta;
+        if (meta) {
+          out[item.symbol].week52High = meta.fiftyTwoWeekHigh;
+          out[item.symbol].week52Low = meta.fiftyTwoWeekLow;
+        }
         if (d.peg) db.savePegSnapshot(item.symbol, d.peg, d.pe, d.price, d.epsGrowth).catch(() => {});
       }
     }
@@ -720,7 +767,7 @@ function ShortlistTab({ shortlist, setShortlist }) {
                 {[
                   ["PEG", s?.peg != null ? (s.recentSplit ? "split⚠" : fmt.num(s?.peg)) : "—",
                    s?.recentSplit ? "#f5c842" : pegColor(s?.peg),
-                   s?.pegSource ? `source: ${s.pegSource}` : ""],
+                   s?.pegSource ? `Yahoo source: ${s.pegSource}` : ""],
                   ["fwd P/E", fmt.num(s?.forwardPE), s?.forwardPE < 25 ? "#00e5a0" : s?.forwardPE < 40 ? "#f5c842" : "#ff6b6b", ""],
                   ["EPS Grw", fmt.pct(s?.epsGrowth), "#888", ""],
                   ["Gross Mgn", fmt.pct(s?.grossMargin), "#888", ""],
@@ -734,6 +781,56 @@ function ShortlistTab({ shortlist, setShortlist }) {
                   </div>
                 ))}
               </div>
+
+              {/* FMP vs Yahoo PEG comparison */}
+              {s?.fmp && (
+                <div style={{ background: "#0a0a0a", borderRadius: 8, padding: "10px 12px", marginBottom: 12 }}>
+                  <div style={{ fontSize: 9, color: "#333", textTransform: "uppercase", letterSpacing: 1, marginBottom: 8 }}>PEG source comparison</div>
+                  <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
+                    {/* Yahoo PEG */}
+                    <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                      <span style={{ fontSize: 9, color: "#444" }}>Yahoo Finance</span>
+                      <span style={{ fontFamily: "monospace", fontSize: 14, fontWeight: 700, color: s.recentSplit ? "#f5c842" : pegColor(s?.peg) }}>
+                        {s.recentSplit ? "split⚠" : s?.peg != null ? fmt.num(s.peg) : "—"}
+                      </span>
+                      <span style={{ fontSize: 9, color: "#2a2a2a" }}>{s?.pegSource || "—"}</span>
+                    </div>
+                    {/* Divider */}
+                    <div style={{ width: 1, background: "#1a1a1a", alignSelf: "stretch" }}/>
+                    {/* FMP PEG */}
+                    <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                      <span style={{ fontSize: 9, color: "#444" }}>FMP (pre-calculated)</span>
+                      <span style={{ fontFamily: "monospace", fontSize: 14, fontWeight: 700, color: pegColor(s.fmp.pegRatio ?? s.fmp.pegTTM) }}>
+                        {s.fmp.pegRatio != null ? fmt.num(s.fmp.pegRatio)
+                          : s.fmp.pegTTM != null ? fmt.num(s.fmp.pegTTM)
+                          : "—"}
+                      </span>
+                      <span style={{ fontSize: 9, color: "#2a2a2a" }}>
+                        {s.fmp.pegRatio != null ? "key-metrics" : s.fmp.pegTTM != null ? "TTM" : "unavailable"}
+                      </span>
+                    </div>
+                    {/* Delta */}
+                    {s?.peg != null && (s.fmp.pegRatio != null || s.fmp.pegTTM != null) && (() => {
+                      const fmpPeg = s.fmp.pegRatio ?? s.fmp.pegTTM;
+                      const delta = Math.abs(s.peg - fmpPeg);
+                      const pct = (delta / Math.max(s.peg, fmpPeg)) * 100;
+                      const agree = pct < 20;
+                      return (
+                        <div style={{ display: "flex", flexDirection: "column", gap: 2, marginLeft: "auto" }}>
+                          <span style={{ fontSize: 9, color: "#444" }}>Agreement</span>
+                          <span style={{ fontSize: 12, fontWeight: 700, color: agree ? "#00e5a0" : pct < 50 ? "#f5c842" : "#ff6b6b" }}>
+                            {agree ? "✓ Consistent" : pct < 50 ? "~ Moderate" : "⚠ Diverging"}
+                          </span>
+                          <span style={{ fontSize: 9, color: "#2a2a2a" }}>{pct.toFixed(0)}% diff</span>
+                        </div>
+                      );
+                    })()}
+                  </div>
+                </div>
+              )}
+              {s?.fmp === null && (
+                <div style={{ fontSize: 10, color: "#2a2a2a", marginBottom: 12, fontStyle: "italic" }}>FMP unavailable — Yahoo only</div>
+              )}
 
               {/* Analyst consensus */}
               {s?.analystTarget && (
