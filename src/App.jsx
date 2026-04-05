@@ -244,7 +244,7 @@ async function fetchFMP(symbol) {
   }
 }
 
-
+async function fetchHistoricalPrices(symbol, days = 120) {
   const to = Math.floor(Date.now() / 1000);
   const from = to - days * 86400;
   const r = await fetch(`/api/yahoo?symbol=${symbol}&endpoint=history&from=${from}&to=${to}`);
