@@ -49,6 +49,15 @@ export default async function handler(req, res) {
     } else if (effectivePE && epsGrowthTTM && epsGrowthTTM > 0) {
       calcPeg = parseFloat((effectivePE / Math.min(epsGrowthTTM, 100)).toFixed(2));
       calcPegSource = "TTM";
+    } else if (effectivePE && m["revenueGrowth3Y"] && m["revenueGrowth3Y"] > 0) {
+      // Fallback: use revenue growth when EPS history unavailable (e.g. post-acquisition amortization)
+      const revGrowthCapped = Math.min(m["revenueGrowth3Y"], 100);
+      calcPeg = parseFloat((effectivePE / revGrowthCapped).toFixed(2));
+      calcPegSource = "rev3Y~"; // ~ indicates approximation
+    } else if (effectivePE && m["revenueGrowth5Y"] && m["revenueGrowth5Y"] > 0) {
+      const revGrowthCapped = Math.min(m["revenueGrowth5Y"], 100);
+      calcPeg = parseFloat((effectivePE / revGrowthCapped).toFixed(2));
+      calcPegSource = "rev5Y~";
     }
 
     const result = {
