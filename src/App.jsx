@@ -900,6 +900,7 @@ const DEFAULT_POSITIONS = [
 function PortfolioTab({ positions, setPositions }) {
   const [quotes, setQuotes] = useState({});
   const [fundamentals, setFundamentals] = useState({});
+  const [finnhubData, setFinnhubData] = useState({});
   const [loading, setLoading] = useState(false);
   const [adding, setAdding] = useState(false);
   const [form, setForm] = useState({ symbol: "", shares: "", avgCost: "", thesis: "" });
@@ -912,6 +913,7 @@ function PortfolioTab({ positions, setPositions }) {
   const buildPortfolioData = () => positions.map(p => {
     const q = quotes[p.symbol];
     const f = fundamentals[p.symbol];
+    const fh = finnhubData[p.symbol];
     const price = q?.price || p.avgCost;
     const value = p.shares * price;
     const gainPct = ((price - p.avgCost) / p.avgCost) * 100;
@@ -932,6 +934,14 @@ function PortfolioTab({ positions, setPositions }) {
       forwardPE: f?.forwardPE?.toFixed(1), peg: peg?.toFixed(2),
       analystUpside: upside?.toFixed(1), analystRec: f?.recommendation,
       revenueGrowth: f?.revenueGrowth ? (f.revenueGrowth * 100).toFixed(1) : null,
+      // Finnhub independent data
+      fhPeg: fh?.pegAnnual?.toFixed(2) || null,
+      fhPegSource: fh?.pegSource || null,
+      fhEpsGrowth3Y: fh?.epsGrowth3Y?.toFixed(1) || null,
+      fhEpsGrowth5Y: fh?.epsGrowth5Y?.toFixed(1) || null,
+      fhPeTTM: fh?.peTTM?.toFixed(1) || null,
+      fhRoic: fh?.roicTTM?.toFixed(1) || null,
+      fhGrossMargin: fh?.grossMarginTTM?.toFixed(1) || null,
     };
   });
 
@@ -944,20 +954,24 @@ function PortfolioTab({ positions, setPositions }) {
     const prompt = `You are a rational, long-term investment analyst. A portfolio investor wants to deploy $${amount.toFixed(0)} of new cash.
 
 CURRENT PORTFOLIO (total value $${totalValue.toFixed(0)}):
-${portfolioData.map(p => `${p.symbol}: weight ${p.portfolioWeight}%, fwdPE ${p.forwardPE}, PEG ${p.peg}, analyst upside ${p.analystUpside}%, rec ${p.analystRec}, thesis: ${p.thesis}`).join('\n')}
+${portfolioData.map(p => `${p.symbol}: weight ${p.portfolioWeight}%
+  Yahoo: fwdPE ${p.forwardPE}, PEG ${p.peg}, analyst upside ${p.analystUpside}%, rec ${p.analystRec}
+  Finnhub: PEG ${p.fhPeg || "n/a"} (${p.fhPegSource || "—"}), EPS growth 3Y ${p.fhEpsGrowth3Y || "n/a"}%, 5Y ${p.fhEpsGrowth5Y || "n/a"}%
+  Thesis: ${p.thesis}`).join('\n')}
 
 NEW CASH TO DEPLOY: $${amount.toFixed(0)} (${((amount / totalValue) * 100).toFixed(1)}% of portfolio)
 
+Use BOTH Yahoo and Finnhub data for conviction. Where both sources agree on a low PEG, conviction is higher.
+
 Rules for cash deployment:
-- Prefer positions with lowest PEG and highest analyst upside
+- Prefer positions with lowest PEG (confirmed by both sources) and highest analyst upside
 - Avoid adding to positions already >25% of portfolio
-- Prefer positions where adding cash reduces concentration risk
 - Suggest splitting across 1-3 positions max — don't over-diversify
 - Be specific: how many shares to buy at current price for each recommendation
 - Each DEGIRO trade costs ~€4, so minimum allocation per position should be meaningful (>$500)
 
 Return ONLY valid JSON:
-{"summary":"one sentence on deployment strategy","allocations":[{"symbol":"X","amount":1234,"shares":5,"rationale":"brief reason","conviction":"high or medium"}]}`;
+{"summary":"one sentence on deployment strategy","allocations":[{"symbol":"X","amount":1234,"shares":5,"rationale":"brief reason referencing valuation data","conviction":"high or medium"}]}`;
 
     try {
       const response = await fetch("/api/analyze", {
@@ -985,6 +999,7 @@ Return ONLY valid JSON:
     setLoading(true);
     const qOut = {};
     const fOut = {};
+    const fhOut = {};
     for (const p of positions) {
       const ticker = p.yahooSymbol || p.symbol;
       const data = await yahooQuote(ticker);
@@ -995,11 +1010,14 @@ Return ONLY valid JSON:
         week52Low: meta.fiftyTwoWeekLow,
         currency: meta.currency || p.currency || "USD",
       };
-      // Only fetch fundamentals for stocks (ETFs don't have PEG/PE etc)
+      // Only fetch fundamentals for stocks
       if (p.assetType === "stock") {
         try {
-          const sd = await yahooSummary(ticker);
-          const fin = sd?.quoteSummary?.result?.[0];
+          const [summaryResult, fhResult] = await Promise.all([
+            yahooSummary(ticker),
+            fetchFinnhub(p.symbol),
+          ]);
+          const fin = summaryResult?.quoteSummary?.result?.[0];
           const fd = fin?.financialData || {};
           const ks = fin?.defaultKeyStatistics || {};
           const sdet = fin?.summaryDetail || {};
@@ -1014,11 +1032,13 @@ Return ONLY valid JSON:
             grossMargins: fd.grossMargins?.raw,
             revenueGrowth: fd.revenueGrowth?.raw,
           };
+          if (!fhResult?.error) fhOut[p.symbol] = fhResult;
         } catch {}
       }
     }
     setQuotes(qOut);
     setFundamentals(fOut);
+    setFinnhubData(fhOut);
     setLoading(false);
   };
 
@@ -1047,7 +1067,11 @@ Return ONLY valid JSON:
     const prompt = `You are a rational, long-term investment analyst. Your primary rule: DO NOT TRADE unless there is a compelling, data-driven reason. Over-trading destroys returns through taxes, spreads, and timing mistakes.
 
 PORTFOLIO (value $${totalValue.toFixed(0)}, return ${ret.toFixed(1)}%):
-${portfolioData.map(p => `${p.symbol}: ${p.shares} shares, avg $${p.avgCost}, now $${p.currentPrice}, gain ${p.gainLossPct}%, weight ${p.portfolioWeight}%, fwdPE ${p.forwardPE}, PEG ${p.peg}, analyst upside ${p.analystUpside}%, rec ${p.analystRec}`).join('\n')}
+${portfolioData.map(p => `${p.symbol}: ${p.shares} shares, avg $${p.avgCost}, now $${p.currentPrice}, gain ${p.gainLossPct}%, weight ${p.portfolioWeight}%
+  Yahoo: fwdPE ${p.forwardPE}, PEG ${p.peg}, analyst upside ${p.analystUpside}%, rec ${p.analystRec}
+  Finnhub: PEG ${p.fhPeg || "n/a"} (${p.fhPegSource || "—"}), EPS growth 3Y ${p.fhEpsGrowth3Y || "n/a"}%, ROIC ${p.fhRoic || "n/a"}%`).join('\n')}
+
+Use BOTH Yahoo and Finnhub data. Where they agree, the signal is stronger. Where they diverge, be more cautious.
 
 STRICT RULES — only recommend action if ALL conditions are met:
 - TRIM: position weight >20% AND (PEG >2.5 OR analyst upside <5%). Otherwise HOLD.
@@ -1057,7 +1081,7 @@ STRICT RULES — only recommend action if ALL conditions are met:
 - Each trade costs ~€4 in DEGIRO fees — factor this into small positions.
 
 Return ONLY valid JSON, no other text:
-{"summary":"one sentence assessment","signals":[{"symbol":"X","signal":"TRIM or HOLD or ADD","reason":"brief data-driven reason","action":"specific action or null if HOLD"}],"rebalance":[{"from":"X","to":"Y","rationale":"brief reason","urgency":"high or medium or low"}]}`;
+{"summary":"one sentence assessment","signals":[{"symbol":"X","signal":"TRIM or HOLD or ADD","reason":"brief data-driven reason referencing both sources","action":"specific action or null if HOLD"}],"rebalance":[{"from":"X","to":"Y","rationale":"brief reason","urgency":"high or medium or low"}]}`;
 
     try {
       const response = await fetch("/api/analyze", {
