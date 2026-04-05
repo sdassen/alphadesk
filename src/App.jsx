@@ -776,7 +776,7 @@ function ShortlistTab({ shortlist, setShortlist }) {
                           : "—"}
                       </span>
                       <span style={{ fontSize: 9, color: "#2a2a2a" }}>
-                        {s.fmp.pegAnnual != null ? "annual" : s.fmp.pegQuarterly != null ? "quarterly" : "unavailable"}
+                        {s.fmp.pegAnnual != null ? (s.fmp.pegSource || "calculated") : "unavailable"}
                       </span>
                     </div>
                     {/* Extra Finnhub metrics */}
@@ -793,8 +793,8 @@ function ShortlistTab({ shortlist, setShortlist }) {
                       </>
                     )}
                     {/* Agreement indicator */}
-                    {s?.peg != null && (s.fmp.pegAnnual != null || s.fmp.pegQuarterly != null) && (() => {
-                      const fhPeg = s.fmp.pegAnnual ?? s.fmp.pegQuarterly;
+                    {s?.peg != null && s.fmp.pegAnnual != null && (() => {
+                      const fhPeg = s.fmp.pegAnnual;
                       const delta = Math.abs(s.peg - fhPeg);
                       const pct = (delta / Math.max(s.peg, fhPeg)) * 100;
                       const agree = pct < 20;
