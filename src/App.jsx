@@ -270,7 +270,17 @@ const db = {
   },
   async deletePortfolio(symbol) { await SB.from("portfolio").delete().eq("symbol", symbol); },
 
-  async savePegSnapshot(symbol, peg, pe, price, epsGrowth) {
+  async getLastRebalance() {
+    const { data } = await SB.from("rebalance_log")
+      .select("*").eq("type", "rebalance")
+      .order("executed_at", { ascending: false }).limit(1);
+    return data?.[0] || null;
+  },
+  async logRebalance(summary, signals, override = false, overrideReason = null) {
+    await SB.from("rebalance_log").insert({
+      type: "rebalance", summary, signals, override, override_reason: overrideReason
+    });
+  },
     await SB.from("peg_history").upsert({
       symbol, peg, pe, price, eps_growth: epsGrowth,
       date: new Date().toISOString().split("T")[0]
@@ -867,6 +877,9 @@ function PortfolioTab({ positions, setPositions }) {
   const [form, setForm] = useState({ symbol: "", shares: "", avgCost: "", thesis: "" });
   const [advice, setAdvice] = useState(null);
   const [loadingAdvice, setLoadingAdvice] = useState(false);
+  const [lastRebalance, setLastRebalance] = useState(null);
+  const [showOverride, setShowOverride] = useState(false);
+  const COOLDOWN_DAYS = 30;
   const [cashAmount, setCashAmount] = useState("");
   const [cashAdvice, setCashAdvice] = useState(null);
   const [loadingCash, setLoadingCash] = useState(false);
@@ -1034,7 +1047,10 @@ Return ONLY valid JSON:
     setLoading(false);
   };
 
-  useEffect(() => { if (positions.length) refresh(); }, [positions.length]);
+  useEffect(() => {
+    if (positions.length) refresh();
+    db.getLastRebalance().then(setLastRebalance);
+  }, [positions.length]);
 
   const remove = async (sym) => { await db.deletePortfolio(sym); setPositions(p => p.filter(x => x.symbol !== sym)); };
 
@@ -1051,9 +1067,27 @@ Return ONLY valid JSON:
   const pnl = totalValue - totalCost;
   const ret = totalCost ? (pnl / totalCost) * 100 : 0;
 
-  const getRebalancingAdvice = async () => {
+  // ── Cooldown logic ───────────────────────────────────────────────────────────
+  const cooldownStatus = (() => {
+    if (!lastRebalance) return { blocked: false, daysLeft: 0, daysAgo: null };
+    const lastDate = new Date(lastRebalance.executed_at);
+    const daysAgo = Math.floor((Date.now() - lastDate) / 86400000);
+    const daysLeft = COOLDOWN_DAYS - daysAgo;
+    return { blocked: daysLeft > 0, daysLeft: Math.max(0, daysLeft), daysAgo };
+  })();
+
+  // Market stress check — VIX or Fear&Greed extreme → allow override
+  const marketStress = (() => {
+    // We don't have live market data here, but we can check from the MarketTab context
+    // For now, expose override as manual option with confirmation
+    return false; // Could be wired to MarktTab data later
+  })();
+
+  const getRebalancingAdvice = async (isOverride = false) => {
+    if (cooldownStatus.blocked && !isOverride) return;
     setLoadingAdvice(true);
     setAdvice(null);
+    setShowOverride(false);
     const portfolioData = buildPortfolioData();
 
     const prompt = `You are a rational, long-term investment analyst. Your primary rule: DO NOT TRADE unless there is a compelling, data-driven reason.
@@ -1097,6 +1131,13 @@ Return ONLY valid JSON:
       const clean = text.replace(/```json|```/g, "").trim();
       const parsed = JSON.parse(clean);
       setAdvice(parsed);
+      // Log to DB and reset cooldown
+      await db.logRebalance(
+        parsed.summary, parsed.signals,
+        isOverride, isOverride ? "manual override" : null
+      );
+      const updated = await db.getLastRebalance();
+      setLastRebalance(updated);
     } catch (e) {
       console.error("AI analysis error:", e);
       setAdvice({ error: `Analysis failed: ${e.message}` });
@@ -1129,10 +1170,31 @@ Return ONLY valid JSON:
           <button onClick={refresh} disabled={loading} style={{ background: "#0a0a0a", border: "1px solid #1e1e1e", borderRadius: 8, color: loading ? "#2a2a2a" : "#555", padding: "7px 12px", cursor: "pointer", display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}>
             {loading ? <Spinner/> : <Icon name="refresh" size={13}/>} Refresh
           </button>
-          <button onClick={getRebalancingAdvice} disabled={loadingAdvice || loading || !Object.keys(quotes).length}
-            style={{ background: loadingAdvice ? "#0a0a0a" : "#0d1a14", border: "1px solid #00e5a033", borderRadius: 8, color: loadingAdvice ? "#2a2a2a" : "#00e5a0", padding: "7px 14px", cursor: "pointer", display: "flex", alignItems: "center", gap: 6, fontSize: 12, fontWeight: 600 }}>
-            {loadingAdvice ? <Spinner/> : "✦"} {loadingAdvice ? "Analyzing…" : "AI Rebalance"}
-          </button>
+          {/* AI Rebalance — with 30-day cooldown */}
+          {cooldownStatus.blocked ? (
+            <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4 }}>
+              <button
+                onClick={() => setShowOverride(v => !v)}
+                style={{ background: "#0a0a0a", border: "1px solid #2a2a2a", borderRadius: 8, color: "#444", padding: "7px 14px", cursor: "pointer", fontSize: 12, display: "flex", alignItems: "center", gap: 6 }}
+                title={`Last rebalance: ${cooldownStatus.daysAgo}d ago`}>
+                🔒 Rebalance in {cooldownStatus.daysLeft}d
+              </button>
+              {showOverride && (
+                <div style={{ background: "#0d0d0d", border: "1px solid #f5c84233", borderRadius: 8, padding: "10px 14px", fontSize: 11, color: "#f5c842", maxWidth: 240, textAlign: "right" }}>
+                  <div style={{ marginBottom: 8, lineHeight: 1.5 }}>Override cooldown? This is meant for exceptional market events only. Last ran {cooldownStatus.daysAgo}d ago.</div>
+                  <button onClick={() => getRebalancingAdvice(true)}
+                    style={{ background: "#f5c84222", border: "1px solid #f5c84244", borderRadius: 6, color: "#f5c842", padding: "5px 12px", cursor: "pointer", fontSize: 11, fontWeight: 700 }}>
+                    {loadingAdvice ? <Spinner/> : "⚡ Override & Run"}
+                  </button>
+                </div>
+              )}
+            </div>
+          ) : (
+            <button onClick={() => getRebalancingAdvice(false)} disabled={loadingAdvice || loading || !Object.keys(quotes).length}
+              style={{ background: loadingAdvice ? "#0a0a0a" : "#0d1a14", border: "1px solid #00e5a033", borderRadius: 8, color: loadingAdvice ? "#2a2a2a" : "#00e5a0", padding: "7px 14px", cursor: "pointer", display: "flex", alignItems: "center", gap: 6, fontSize: 12, fontWeight: 600 }}>
+              {loadingAdvice ? <Spinner/> : "✦"} {loadingAdvice ? "Analyzing…" : `AI Rebalance${lastRebalance ? ` (${cooldownStatus.daysAgo}d ago)` : ""}`}
+            </button>
+          )}
           {/* Cash deployment */}
           <div style={{ display: "flex", alignItems: "center", gap: 6, background: "#0a0a0a", border: "1px solid #1a2a1a", borderRadius: 8, padding: "4px 4px 4px 12px" }}>
             <span style={{ fontSize: 11, color: "#555", whiteSpace: "nowrap" }}>Deploy $</span>
