@@ -140,6 +140,12 @@ async function fetchFull(symbol) {
     sector: ap.sector || "—",
     logo: `https://logo.clearbit.com/${ap.website?.replace(/https?:\/\//, "").split("/")[0]}`,
     currentEpsGrowth: epsGrowthRaw, recentSplit,
+    splitFactor: (() => {
+      const raw = ks.lastSplitFactor?.raw || ks.lastSplitFactor || null;
+      if (!recentSplit || !raw) return 1;
+      const parts = String(raw).split(':');
+      return parts.length === 2 ? parseFloat(parts[0]) / parseFloat(parts[1]) : 1;
+    })(),
   };
 }
 
@@ -196,6 +202,7 @@ async function fetchCombined(symbol) {
     epsGrowth5Y: fh?.epsGrowth5Y ?? null,
     fhPeTTM: fh?.peTTM ?? null,
     recentSplit: yahooData.recentSplit,
+    splitFactor: yahooData.splitFactor || 1,
   };
 }
 
@@ -874,25 +881,40 @@ function PortfolioTab({ positions, setPositions }) {
     const weight = (value / totalValue) * 100;
     const upside = f?.targetMeanPrice && price ? ((f.targetMeanPrice - price) / price) * 100 : null;
 
-    // Use combined PEG (Finnhub primary) stored in f.peg by refresh()
-    const peg = f?.peg ?? null;
-    const pegSource = f?.pegSource ?? null;
+    // Both PEGs explicitly
+    const pegForward  = f?.pegForward  ?? null;  // Yahoo analyst consensus (forward-looking)
+    const pegHistoric = fh?.pegAnnual  ?? null;  // Finnhub realized CAGR (conservative)
+
+    // 52-week — adjust for recent splits (Yahoo reports pre-split prices for up to 2 weeks)
+    const recentSplit = f?.recentSplit || false;
+    const splitFactor = recentSplit && f?.splitFactor ? f.splitFactor : 1;
+    const week52High = q?.week52High ? q.week52High / splitFactor : null;
+    const week52Low  = q?.week52Low  ? q.week52Low  / splitFactor : null;
+    const week52Pct  = week52High && week52Low && price
+      ? ((price - week52Low) / (week52High - week52Low)) * 100 : null;
 
     return {
       symbol: p.symbol, thesis: p.thesis, shares: p.shares,
       avgCost: p.avgCost, currentPrice: price?.toFixed(2),
       gainLossPct: gainPct?.toFixed(1), portfolioWeight: weight?.toFixed(1),
       forwardPE: f?.forwardPE?.toFixed(1),
-      peg: peg?.toFixed(2), pegSource,
+      // Both PEGs with sources
+      pegForward:      pegForward?.toFixed(2)  ?? null,
+      pegForwardSrc:   f?.pegForwardSrc ?? null,
+      pegHistoric:     pegHistoric?.toFixed(2) ?? null,
+      pegHistoricSrc:  fh?.pegSource ?? null,
+      // Divergence signal
+      pegDivergence:   f?.pegDivergence ?? null,
+      // 52-week (split-adjusted if needed)
+      week52Pct:       week52Pct?.toFixed(0) ?? null,
+      week52High:      week52High?.toFixed(2) ?? null,
+      week52Low:       week52Low?.toFixed(2)  ?? null,
+      recentSplit,
       analystUpside: upside?.toFixed(1), analystRec: f?.recommendation,
       revenueGrowth: f?.revenueGrowth ? (f.revenueGrowth * 100).toFixed(1) : null,
-      fhPeg: fh?.pegAnnual?.toFixed(2) || null,
-      fhPegSource: fh?.pegSource || null,
       fhEpsGrowth3Y: fh?.epsGrowth3Y?.toFixed(1) || null,
       fhEpsGrowth5Y: fh?.epsGrowth5Y?.toFixed(1) || null,
-      fhPeTTM: fh?.peTTM?.toFixed(1) || null,
       fhRoic: fh?.roicTTM?.toFixed(1) || null,
-      fhGrossMargin: fh?.grossMarginTTM?.toFixed(1) || null,
     };
   });
 
@@ -905,22 +927,23 @@ function PortfolioTab({ positions, setPositions }) {
     const prompt = `You are a rational, long-term investment analyst deploying $${amount.toFixed(0)} of new cash.
 
 CURRENT PORTFOLIO (total value $${totalValue.toFixed(0)}):
-${portfolioData.map(p => `${p.symbol}: weight ${p.portfolioWeight}%
-  PEG forward (analyst consensus): ${p.peg || "n/a"} — forward-looking
-  PEG historic (realized CAGR):    ${p.fhPeg || "n/a"} [${p.fhPegSource || "—"}] — conservative
+${portfolioData.map(p => `${p.symbol}: weight ${p.portfolioWeight}%, price $${p.currentPrice}
+  PEG forward (analyst consensus): ${p.pegForward || "n/a"} [${p.pegForwardSrc || "—"}] — forward-looking
+  PEG historic (realized CAGR):    ${p.pegHistoric || "n/a"} [${p.pegHistoricSrc || "—"}] — conservative
   EPS 3Y: ${p.fhEpsGrowth3Y || "n/a"}% | fwd P/E: ${p.forwardPE} | upside: ${p.analystUpside}%
+  52W position: ${p.week52Pct != null ? `${p.week52Pct}% of range${p.recentSplit ? " (split-adjusted)" : ""}` : "n/a"}
   Thesis: ${p.thesis}`).join('\n')}
 
 CASH TO DEPLOY: $${amount.toFixed(0)} (${((amount / totalValue) * 100).toFixed(1)}% of portfolio)
 
-For each recommendation, cite both PEGs. High conviction = both forward AND historic PEG are low.
-- Prefer: low forward PEG + confirmed by historic PEG + high analyst upside + weight <25%
-- Avoid: positions already >25% weight
+High conviction = both forward AND historic PEG are low + stock near 52W lows.
+- Prefer: low forward PEG confirmed by historic PEG + high analyst upside + near 52W low + weight <25%
+- Avoid: positions already >25% weight or near 52W highs without strong valuation case
 - Split across 1-3 positions max, min $500 per trade (DEGIRO fee: ~€4)
 - Specify exact share count at current price
 
 Return ONLY valid JSON:
-{"summary":"one sentence strategy","allocations":[{"symbol":"X","amount":1234,"shares":5,"rationale":"cite forward AND historic PEG in reasoning","conviction":"high or medium"}]}`;
+{"summary":"one sentence strategy","allocations":[{"symbol":"X","amount":1234,"shares":5,"rationale":"cite forward PEG, historic PEG and 52W position in reasoning","conviction":"high or medium"}]}`;
 
     try {
       const response = await fetch("/api/analyze", {
@@ -964,32 +987,43 @@ Return ONLY valid JSON:
         try {
           const combined = await fetchCombined(p.symbol);
           if (combined) {
-            // Merge fundamentals from fetchCombined into fOut
             fOut[p.symbol] = {
-              forwardPE: combined.forwardPE,
-              trailingPE: combined.pe,
+              forwardPE:    combined.forwardPE,
+              trailingPE:   combined.pe,
               earningsGrowth: combined.epsGrowth / 100,
-              targetMeanPrice: null, // fetched separately below
-              recommendation: null,
               grossMargins: combined.grossMargin / 100,
               revenueGrowth: combined.revenueGrowth / 100,
-              // Keep raw Yahoo summary data too for analyst targets
-              _summary: null,
+              // Both PEGs with sources and divergence
+              pegForward:    combined.pegForward,
+              pegForwardSrc: combined.pegForwardSrc,
+              pegHistoric:   combined.pegHistoric,
+              pegHistoricSrc: combined.pegHistoricSrc,
+              pegDivergence: combined.pegDivergence,
+              // Split detection
+              recentSplit:   combined.recentSplit,
+              splitFactor:   combined.splitFactor || 1,
+              // Analyst targets fetched below
+              targetMeanPrice: null,
+              recommendation: null,
             };
-            // Fetch analyst data from Yahoo summary separately
+            // Fetch analyst targets from Yahoo
             const sd = await yahooSummary(ticker);
             const fin = sd?.quoteSummary?.result?.[0];
             if (fin) {
               fOut[p.symbol].targetMeanPrice = fin.financialData?.targetMeanPrice?.raw || null;
-              fOut[p.symbol].recommendation = fin.financialData?.recommendationKey || null;
-              fOut[p.symbol].forwardEps = fin.defaultKeyStatistics?.forwardEps?.raw || null;
-              fOut[p.symbol].trailingEps = fin.defaultKeyStatistics?.trailingEps?.raw || null;
+              fOut[p.symbol].recommendation  = fin.financialData?.recommendationKey  || null;
+              fOut[p.symbol].forwardEps      = fin.defaultKeyStatistics?.forwardEps?.raw  || null;
+              fOut[p.symbol].trailingEps     = fin.defaultKeyStatistics?.trailingEps?.raw || null;
+              // Also store split factor from Yahoo for 52w adjustment
+              const splitRaw = fin.defaultKeyStatistics?.lastSplitFactor?.raw;
+              if (combined.recentSplit && splitRaw) {
+                // splitFactor e.g. "3:1" → 3
+                const parts = String(splitRaw).split(':');
+                fOut[p.symbol].splitFactor = parts.length === 2
+                  ? parseFloat(parts[0]) / parseFloat(parts[1]) : 1;
+              }
             }
-            // Store Finnhub data separately
             if (combined.fmp) fhOut[p.symbol] = combined.fmp;
-            // Use combined PEG (Finnhub primary) for display
-            fOut[p.symbol].peg = combined.peg;
-            fOut[p.symbol].pegSource = combined.pegSource;
           }
         } catch {}
       }
@@ -1026,15 +1060,17 @@ Return ONLY valid JSON:
 
 PORTFOLIO (value $${totalValue.toFixed(0)}, return ${ret.toFixed(1)}%):
 ${portfolioData.map(p => `${p.symbol}: ${p.shares} shares @ avg $${p.avgCost}, now $${p.currentPrice}, gain ${p.gainLossPct}%, weight ${p.portfolioWeight}%
-  PEG forward (analyst consensus): ${p.peg || "n/a"} [${p.pegSource || "—"}] — forward-looking, speculative
-  PEG historic (realized CAGR):    ${p.fhPeg || "n/a"} [${p.fhPegSource || "—"}] — conservative, backward-looking
-  EPS growth 3Y: ${p.fhEpsGrowth3Y || "n/a"}% | fwd P/E: ${p.forwardPE} | analyst upside: ${p.analystUpside}% | rec: ${p.analystRec}`).join('\n')}
+  PEG forward (analyst consensus): ${p.pegForward || "n/a"} [${p.pegForwardSrc || "—"}] — forward-looking, speculative
+  PEG historic (realized CAGR):    ${p.pegHistoric || "n/a"} [${p.pegHistoricSrc || "—"}] — conservative, backward-looking
+  EPS growth 3Y: ${p.fhEpsGrowth3Y || "n/a"}% | fwd P/E: ${p.forwardPE} | analyst upside: ${p.analystUpside}% | rec: ${p.analystRec}
+  52W position: ${p.week52Pct != null ? `${p.week52Pct}% of range${p.recentSplit ? " (split-adjusted)" : ""}` : "n/a"}`).join('\n')}
 
 PEG INTERPRETATION GUIDE:
 - For growth companies (MRVL, MU, TSM): weight forward PEG more — they trade on future earnings
-- For mature/cyclical companies: weight historic PEG more — forward estimates are often too optimistic  
+- For mature/cyclical companies: weight historic PEG more — forward estimates are often too optimistic
 - When forward << historic: market prices in turnaround — higher risk, higher potential
 - When both are low: strongest buy signal — confirmed AND expected cheap
+- 52W position <30% = near lows, potential entry; >70% = near highs, caution on adds
 
 STRICT RULES:
 - TRIM: weight >20% AND (forward PEG >2.5 OR analyst upside <5%). Otherwise HOLD.
@@ -1043,7 +1079,7 @@ STRICT RULES:
 - Each trade costs ~€4 in DEGIRO fees.
 
 Return ONLY valid JSON:
-{"summary":"one sentence assessment","signals":[{"symbol":"X","signal":"TRIM or HOLD or ADD","reason":"data-driven reason citing both PEGs where relevant","action":"specific action or null if HOLD"}],"rebalance":[{"from":"X","to":"Y","rationale":"brief reason","urgency":"high or medium or low"}]}`;
+{"summary":"one sentence assessment","signals":[{"symbol":"X","signal":"TRIM or HOLD or ADD","reason":"data-driven reason citing both PEGs and 52W position","action":"specific action or null if HOLD"}],"rebalance":[{"from":"X","to":"Y","rationale":"brief reason","urgency":"high or medium or low"}]}`;
 
     try {
       const response = await fetch("/api/analyze", {
@@ -1254,8 +1290,12 @@ Return ONLY valid JSON:
           const pl = value - cost;
           const rt = cost ? (pl / cost) * 100 : 0;
           const weight = totalValue ? (value / totalValue) * 100 : 0;
-          const week52Pct = q?.week52High && q?.week52Low
-            ? ((price - q.week52Low) / (q.week52High - q.week52Low)) * 100 : null;
+          const splitFactor = fundamentals[p.symbol]?.splitFactor || 1;
+          const recentSplit = fundamentals[p.symbol]?.recentSplit || false;
+          const w52High = q?.week52High ? q.week52High / splitFactor : null;
+          const w52Low  = q?.week52Low  ? q.week52Low  / splitFactor : null;
+          const week52Pct = w52High && w52Low && price
+            ? Math.max(0, Math.min(100, ((price - w52Low) / (w52High - w52Low)) * 100)) : null;
 
           return (
             <div key={p.symbol} style={{ borderBottom: "1px solid #0c0c0c", transition: "background 0.15s" }}
@@ -1289,7 +1329,9 @@ Return ONLY valid JSON:
                     <div style={{ position: "absolute", left: `${week52Pct}%`, top: -2, width: 2, height: 7, background: "#fff", transform: "translateX(-50%)", borderRadius: 1 }}/>
                   </div>
                   <span style={{ fontSize: 9, color: "#2a2a2a", fontFamily: "monospace", whiteSpace: "nowrap" }}>52W HIGH</span>
-                  <span style={{ fontSize: 9, color: week52Pct < 30 ? "#00e5a0" : week52Pct < 70 ? "#f5c842" : "#ff6b6b", fontFamily: "monospace", whiteSpace: "nowrap" }}>{week52Pct.toFixed(0)}%</span>
+                  <span style={{ fontSize: 9, color: week52Pct < 30 ? "#00e5a0" : week52Pct < 70 ? "#f5c842" : "#ff6b6b", fontFamily: "monospace", whiteSpace: "nowrap" }}>
+                    {week52Pct.toFixed(0)}%{recentSplit ? " ⚠split" : ""}
+                  </span>
                 </div>
               )}
             </div>
