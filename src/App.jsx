@@ -543,22 +543,28 @@ function ShortlistTab({ shortlist, setShortlist }) {
   const [adding, setAdding] = useState(false);
   const [form, setForm] = useState({ symbol: "", target: "", thesis: "" });
   const [stocks, setStocks] = useState({});
+  const [pegHistory, setPegHistory] = useState({});
   const [refreshing, setRefreshing] = useState(false);
 
   const refresh = useCallback(async () => {
     setRefreshing(true);
     const out = {};
+    const pegHist = {};
     for (const item of shortlist) {
-      const [d, finnhubData] = await Promise.all([
+      const [d, finnhubData, histData] = await Promise.all([
         fetchFull(item.symbol),
         fetchFinnhub(item.symbol),
+        db.getPegHistory(item.symbol),
       ]);
       if (d) {
         const sd = await yahooSummary(item.symbol);
         const fin = sd?.quoteSummary?.result?.[0]?.financialData;
+        const qd = await yahooQuote(item.symbol);
+        const meta = qd?.chart?.result?.[0]?.meta;
         out[item.symbol] = {
           ...d,
-          week52High: d.price ? null : null, // comes from meta below
+          week52High: meta?.fiftyTwoWeekHigh || null,
+          week52Low: meta?.fiftyTwoWeekLow || null,
           analystTarget: fin?.targetMeanPrice?.raw || null,
           analystHigh: fin?.targetHighPrice?.raw || null,
           analystLow: fin?.targetLowPrice?.raw || null,
@@ -566,325 +572,24 @@ function ShortlistTab({ shortlist, setShortlist }) {
           recommendation: fin?.recommendationKey || null,
           fmp: finnhubData?.error ? null : { ...finnhubData, source: "Finnhub" },
         };
-        // Get 52w data from quote
-        const qd = await yahooQuote(item.symbol);
-        const meta = qd?.chart?.result?.[0]?.meta;
-        if (meta) {
-          out[item.symbol].week52High = meta.fiftyTwoWeekHigh;
-          out[item.symbol].week52Low = meta.fiftyTwoWeekLow;
-        }
         if (d.peg) db.savePegSnapshot(item.symbol, d.peg, d.pe, d.price, d.epsGrowth).catch(() => {});
+      }
+      // PEG history stats
+      if (histData.length > 1) {
+        const pegs = histData.map(h => h.peg).filter(Boolean);
+        pegHist[item.symbol] = {
+          min: Math.min(...pegs),
+          max: Math.max(...pegs),
+          avg: pegs.reduce((a, b) => a + b, 0) / pegs.length,
+          count: pegs.length,
+          history: histData,
+        };
       }
     }
     setStocks(out);
+    setPegHistory(pegHist);
     setRefreshing(false);
-  }, [shortlist]);
 
-  useEffect(() => { if (shortlist.length) refresh(); }, [shortlist.length]);
-
-  const add = async () => {
-    if (!form.symbol) return;
-    const entry = { symbol: form.symbol.toUpperCase(), target: parseFloat(form.target) || null, thesis: form.thesis, status: "Watching" };
-    await db.upsertShortlist(entry);
-    setShortlist(p => p.find(s => s.symbol === entry.symbol) ? p : [...p, { ...entry, addedAt: Date.now() }]);
-    setAdding(false); setForm({ symbol: "", target: "", thesis: "" });
-  };
-
-  const remove = async (sym) => { await db.deleteShortlist(sym); setShortlist(p => p.filter(s => s.symbol !== sym)); };
-  const updateStatus = async (sym, status) => { await db.updateShortlistStatus(sym, status); setShortlist(p => p.map(s => s.symbol === sym ? { ...s, status } : s)); };
-  const updateTarget = async (sym, target) => {
-    await SB.from("shortlist").update({ target: parseFloat(target) || null }).eq("symbol", sym);
-    setShortlist(p => p.map(s => s.symbol === sym ? { ...s, target: parseFloat(target) || null } : s));
-  };
-
-  const STATUSES = ["Watching", "Ready to Buy", "Bought", "Exited"];
-  const statusColor = { "Watching": "#444", "Ready to Buy": "#f5c842", "Bought": "#00e5a0", "Exited": "#ff6b6b" };
-  const recColor = { "strong_buy": "#00e5a0", "buy": "#7be0c0", "hold": "#f5c842", "underperform": "#ff9966", "sell": "#ff6b6b" };
-
-  // Entry score: 0-100 based on 52w position, analyst upside, PEG
-  const calcScore = (s, item) => {
-    if (!s) return null;
-    let score = 50;
-    // 52-week position: low = buying opportunity
-    if (s.week52High && s.week52Low) {
-      const range = s.week52High - s.week52Low;
-      const pos = range > 0 ? (s.price - s.week52Low) / range : 0.5;
-      score -= (pos - 0.5) * 40; // onderin range = +20pts, bovenkant = -20pts
-    }
-    // Analyst upside
-    if (s.analystTarget && s.price) {
-      const upside = (s.analystTarget - s.price) / s.price;
-      score += Math.min(upside * 100, 30); // max +30pts bij hoog upside
-    }
-    // PEG
-    if (s.peg) {
-      if (s.peg < 0.8) score += 15;
-      else if (s.peg < 1.5) score += 5;
-      else score -= 10;
-    }
-    // Entry target bereikt
-    if (item.target && s.price <= item.target) score += 20;
-    return Math.max(0, Math.min(100, Math.round(score)));
-  };
-
-  const scoreLabel = (score) => {
-    if (score === null) return ["—", "#444"];
-    if (score >= 70) return ["BUY ZONE", "#00e5a0"];
-    if (score >= 50) return ["FAIR", "#f5c842"];
-    return ["EXPENSIVE", "#ff6b6b"];
-  };
-
-  return (
-    <div>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 18 }}>
-        <span style={{ color: "#444", fontSize: 12, fontFamily: "monospace" }}>{shortlist.length} positions · entry timing dashboard</span>
-        <div style={{ display: "flex", gap: 8 }}>
-          <button onClick={refresh} disabled={refreshing} style={{ background: "#0a0a0a", border: "1px solid #1e1e1e", borderRadius: 8, color: refreshing ? "#2a2a2a" : "#555", padding: "7px 12px", cursor: "pointer", display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}>
-            {refreshing ? <Spinner/> : <Icon name="refresh" size={13}/>} Refresh
-          </button>
-          <button onClick={() => setAdding(true)} style={{ background: "#00e5a0", border: "none", borderRadius: 8, color: "#000", padding: "7px 14px", cursor: "pointer", display: "flex", alignItems: "center", gap: 6, fontSize: 12, fontWeight: 700 }}>
-            <Icon name="plus" size={13}/> Add
-          </button>
-        </div>
-      </div>
-
-      {adding && (
-        <div style={{ background: "#070707", border: "1px solid #1e1e1e", borderRadius: 12, padding: 16, marginBottom: 16 }}>
-          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end" }}>
-            {[["Symbol", "symbol", 85], ["Entry $", "target", 95], ["Thesis", "thesis", 290]].map(([label, key, w]) => (
-              <div key={key}>
-                <div style={{ fontSize: 10, color: "#444", letterSpacing: 1, textTransform: "uppercase", marginBottom: 4 }}>{label}</div>
-                <input value={form[key]} onChange={e => setForm(p => ({ ...p, [key]: e.target.value }))}
-                  style={{ width: w, background: "#0d0d0d", border: "1px solid #222", borderRadius: 6, color: "#d0d0d0", padding: "7px 11px", fontSize: 13, fontFamily: "monospace" }}/>
-              </div>
-            ))}
-            <button onClick={add} style={{ background: "#00e5a0", border: "none", borderRadius: 8, color: "#000", padding: "7px 16px", fontWeight: 700, cursor: "pointer" }}>Save</button>
-            <button onClick={() => setAdding(false)} style={{ background: "transparent", border: "1px solid #1e1e1e", borderRadius: 8, color: "#444", padding: "7px 12px", cursor: "pointer" }}>Cancel</button>
-          </div>
-        </div>
-      )}
-
-      {shortlist.length === 0 && !adding && (
-        <div style={{ textAlign: "center", padding: 60, color: "#222", fontFamily: "monospace" }}>
-          <div style={{ fontSize: 30, marginBottom: 10 }}>★</div>
-          <div>Shortlist empty — add stocks via the Scanner</div>
-        </div>
-      )}
-
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(420px, 1fr))", gap: 12 }}>
-        {shortlist.map(item => {
-          const s = stocks[item.symbol];
-          const score = calcScore(s, item);
-          const [signalLabel, signalColor] = scoreLabel(score);
-          const week52Pct = s?.week52High && s?.week52Low
-            ? ((s.price - s.week52Low) / (s.week52High - s.week52Low)) * 100
-            : null;
-          const analystUpside = s?.analystTarget && s?.price
-            ? ((s.analystTarget - s.price) / s.price) * 100
-            : null;
-          const atTarget = s && item.target && s.price <= item.target;
-
-          return (
-            <div key={item.symbol} style={{ background: "#070707", border: `1px solid ${atTarget ? "#00e5a033" : score >= 70 ? "#00e5a018" : "#141414"}`, borderRadius: 14, padding: "18px 20px", position: "relative" }}>
-
-              {/* Header */}
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 14 }}>
-                <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-                  {s?.logo && <img src={s.logo} alt="" style={{ width: 32, height: 32, borderRadius: 8, objectFit: "contain", background: "#111", padding: 3 }} onError={e => e.target.style.display="none"}/>}
-                  <div>
-                    <div style={{ fontFamily: "monospace", fontSize: 16, fontWeight: 700, color: "#fff" }}>{item.symbol}</div>
-                    <div style={{ fontSize: 11, color: "#555", marginTop: 1, maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{s?.name || "—"}</div>
-                  </div>
-                </div>
-                <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 6 }}>
-                  {/* Instap signaal */}
-                  <div style={{ background: signalColor + "22", border: `1px solid ${signalColor}44`, borderRadius: 6, padding: "3px 10px", fontSize: 11, fontWeight: 700, color: signalColor, fontFamily: "monospace" }}>
-                    {score !== null ? `${score} — ${signalLabel}` : "loading…"}
-                  </div>
-                  <select value={item.status} onChange={e => updateStatus(item.symbol, e.target.value)}
-                    style={{ background: "#0d0d0d", border: `1px solid ${statusColor[item.status]}33`, borderRadius: 5, color: statusColor[item.status], padding: "3px 8px", fontSize: 11, fontFamily: "monospace", cursor: "pointer" }}>
-                    {STATUSES.map(st => <option key={st}>{st}</option>)}
-                  </select>
-                </div>
-              </div>
-
-              {/* Prijs + change */}
-              <div style={{ display: "flex", gap: 16, alignItems: "baseline", marginBottom: 14 }}>
-                <span style={{ fontFamily: "monospace", fontSize: 22, fontWeight: 700, color: "#e0e0e0" }}>{s ? fmt.price(s.price) : <Spinner/>}</span>
-                {s && <span style={{ fontFamily: "monospace", fontSize: 13, color: s.change >= 0 ? "#00e5a0" : "#ff6b6b", fontWeight: 600 }}>{fmt.pct(s.change)} today</span>}
-              </div>
-
-              {/* 52-week balk */}
-              {week52Pct !== null && (
-                <div style={{ marginBottom: 14 }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
-                    <span style={{ fontSize: 10, color: "#333", fontFamily: "monospace" }}>52W LOW {fmt.price(s.week52Low)}</span>
-                    <span style={{ fontSize: 10, color: "#555", fontFamily: "monospace" }}>position {week52Pct.toFixed(0)}%</span>
-                    <span style={{ fontSize: 10, color: "#333", fontFamily: "monospace" }}>52W HIGH {fmt.price(s.week52High)}</span>
-                  </div>
-                  <div style={{ height: 6, background: "#111", borderRadius: 3, position: "relative", overflow: "visible" }}>
-                    <div style={{ position: "absolute", left: 0, top: 0, width: `${week52Pct}%`, height: "100%", background: week52Pct < 30 ? "#00e5a0" : week52Pct < 70 ? "#f5c842" : "#ff6b6b", borderRadius: 3 }}/>
-                    <div style={{ position: "absolute", left: `${week52Pct}%`, top: -3, width: 2, height: 12, background: "#fff", borderRadius: 1, transform: "translateX(-50%)" }}/>
-                    {item.target && s && (
-                      <div style={{ position: "absolute", left: `${Math.max(0, Math.min(100, ((item.target - s.week52Low) / (s.week52High - s.week52Low)) * 100))}%`, top: -5, fontSize: 9, color: "#f5c842", transform: "translateX(-50%)", whiteSpace: "nowrap", fontFamily: "monospace" }}>▼ target</div>
-                    )}
-                  </div>
-                </div>
-              )}
-
-              {/* Key metrics grid */}
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 8, marginBottom: 14 }}>
-                {[
-                  ["PEG", s?.peg != null ? (s.recentSplit ? "split⚠" : fmt.num(s?.peg)) : "—",
-                   s?.recentSplit ? "#f5c842" : pegColor(s?.peg),
-                   s?.pegSource ? `Yahoo source: ${s.pegSource}` : ""],
-                  ["fwd P/E", fmt.num(s?.forwardPE), s?.forwardPE < 25 ? "#00e5a0" : s?.forwardPE < 40 ? "#f5c842" : "#ff6b6b", ""],
-                  ["EPS Grw", fmt.pct(s?.epsGrowth), "#888", ""],
-                  ["Gross Mgn", fmt.pct(s?.grossMargin), "#888", ""],
-                ].map(([label, val, color, hint]) => (
-                  <div key={label} style={{ background: "#0a0a0a", borderRadius: 7, padding: "8px 10px" }} title={hint}>
-                    <div style={{ fontSize: 9, color: "#333", textTransform: "uppercase", letterSpacing: 1, marginBottom: 3 }}>
-                      {label}
-                      {hint && <span style={{ marginLeft: 4, color: "#2a2a2a" }}>ⓘ</span>}
-                    </div>
-                    <div style={{ fontFamily: "monospace", fontSize: 13, fontWeight: 600, color }}>{val}</div>
-                  </div>
-                ))}
-              </div>
-
-              {/* Finnhub vs Yahoo PEG comparison */}
-              {s?.fmp && (
-                <div style={{ background: "#0a0a0a", borderRadius: 8, padding: "10px 12px", marginBottom: 12 }}>
-                  <div style={{ fontSize: 9, color: "#333", textTransform: "uppercase", letterSpacing: 1, marginBottom: 8 }}>PEG source comparison</div>
-                  <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
-                    {/* Yahoo PEG */}
-                    <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-                      <span style={{ fontSize: 9, color: "#444" }}>Yahoo Finance</span>
-                      <span style={{ fontFamily: "monospace", fontSize: 14, fontWeight: 700, color: s.recentSplit ? "#f5c842" : pegColor(s?.peg) }}>
-                        {s.recentSplit ? "split⚠" : s?.peg != null ? fmt.num(s.peg) : "—"}
-                      </span>
-                      <span style={{ fontSize: 9, color: "#2a2a2a" }}>{s?.pegSource || "—"}</span>
-                    </div>
-                    {/* Divider */}
-                    <div style={{ width: 1, background: "#1a1a1a", alignSelf: "stretch" }}/>
-                    {/* Finnhub PEG */}
-                    <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-                      <span style={{ fontSize: 9, color: "#444" }}>Finnhub (independent)</span>
-                      <span style={{ fontFamily: "monospace", fontSize: 14, fontWeight: 700, color: pegColor(s.fmp.pegAnnual ?? s.fmp.pegQuarterly) }}>
-                        {s.fmp.pegAnnual != null ? fmt.num(s.fmp.pegAnnual)
-                          : s.fmp.pegQuarterly != null ? fmt.num(s.fmp.pegQuarterly)
-                          : "—"}
-                      </span>
-                      <span style={{ fontSize: 9, color: "#2a2a2a" }}>
-                        {s.fmp.pegAnnual != null ? (s.fmp.pegSource || "calculated") : "unavailable"}
-                      </span>
-                    </div>
-                    {/* Extra Finnhub metrics */}
-                    {s.fmp.epsGrowth3Y != null && (
-                      <>
-                        <div style={{ width: 1, background: "#1a1a1a", alignSelf: "stretch" }}/>
-                        <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-                          <span style={{ fontSize: 9, color: "#444" }}>EPS Growth 3Y</span>
-                          <span style={{ fontFamily: "monospace", fontSize: 14, fontWeight: 700, color: "#888" }}>
-                            {fmt.pct(s.fmp.epsGrowth3Y)}
-                          </span>
-                          <span style={{ fontSize: 9, color: "#2a2a2a" }}>Finnhub CAGR</span>
-                        </div>
-                      </>
-                    )}
-                    {/* Agreement indicator */}
-                    {s?.peg != null && s.fmp.pegAnnual != null && (() => {
-                      const fhPeg = s.fmp.pegAnnual;
-                      const delta = Math.abs(s.peg - fhPeg);
-                      const pct = (delta / Math.max(s.peg, fhPeg)) * 100;
-                      const agree = pct < 20;
-                      return (
-                        <div style={{ display: "flex", flexDirection: "column", gap: 2, marginLeft: "auto" }}>
-                          <span style={{ fontSize: 9, color: "#444" }}>Agreement</span>
-                          <span style={{ fontSize: 12, fontWeight: 700, color: agree ? "#00e5a0" : pct < 50 ? "#f5c842" : "#ff6b6b" }}>
-                            {agree ? "✓ Consistent" : pct < 50 ? "~ Moderate" : "⚠ Diverging"}
-                          </span>
-                          <span style={{ fontSize: 9, color: "#2a2a2a" }}>{pct.toFixed(0)}% diff</span>
-                        </div>
-                      );
-                    })()}
-                  </div>
-                </div>
-              )}
-              {s?.fmp === null && (
-                <div style={{ fontSize: 10, color: "#2a2a2a", marginBottom: 12, fontStyle: "italic" }}>Add FINNHUB_API_KEY to Vercel to enable second source</div>
-              )}
-
-              {/* Analyst consensus */}
-              {s?.analystTarget && (
-                <div style={{ background: "#0a0a0a", borderRadius: 8, padding: "10px 12px", marginBottom: 12 }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
-                    <span style={{ fontSize: 10, color: "#444", textTransform: "uppercase", letterSpacing: 1 }}>Analyst consensus · {s.numAnalysts} analysts</span>
-                    {s.recommendation && (
-                      <span style={{ fontSize: 10, color: recColor[s.recommendation] || "#888", fontWeight: 700, textTransform: "uppercase" }}>{s.recommendation?.replace("_", " ")}</span>
-                    )}
-                  </div>
-                  <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                    <span style={{ fontSize: 11, color: "#444", fontFamily: "monospace" }}>{fmt.price(s.analystLow)}</span>
-                    <div style={{ flex: 1, height: 4, background: "#1a1a1a", borderRadius: 2, position: "relative" }}>
-                      {/* Range bar */}
-                      {s.analystLow && s.analystHigh && (
-                        <div style={{
-                          position: "absolute",
-                          left: `${Math.max(0, ((s.analystLow - s.price * 0.7) / (s.price * 0.6)) * 100)}%`,
-                          width: "60%",
-                          height: "100%",
-                          background: "#00e5a033",
-                          borderRadius: 2
-                        }}/>
-                      )}
-                      {/* Current price marker */}
-                      <div style={{ position: "absolute", left: "30%", top: -4, width: 2, height: 12, background: "#555", borderRadius: 1 }}/>
-                      {/* Target marker */}
-                      {s.analystTarget && s.analystLow && s.analystHigh && (
-                        <div style={{
-                          position: "absolute",
-                          left: `${Math.min(95, Math.max(5, 30 + (((s.analystTarget - s.price) / (s.analystHigh - s.analystLow)) * 60)))}%`,
-                          top: -4, width: 2, height: 12, background: "#00e5a0", borderRadius: 1
-                        }}/>
-                      )}
-                    </div>
-                    <span style={{ fontSize: 11, color: "#444", fontFamily: "monospace" }}>{fmt.price(s.analystHigh)}</span>
-                  </div>
-                  <div style={{ display: "flex", justifyContent: "center", marginTop: 6, gap: 6, alignItems: "center" }}>
-                    <span style={{ fontSize: 12, color: "#888", fontFamily: "monospace" }}>Target: {fmt.price(s.analystTarget)}</span>
-                    <span style={{ fontSize: 12, color: analystUpside >= 0 ? "#00e5a0" : "#ff6b6b", fontWeight: 700, fontFamily: "monospace" }}>
-                      {analystUpside !== null ? `${analystUpside >= 0 ? "+" : ""}${analystUpside.toFixed(1)}%` : ""}
-                    </span>
-                  </div>
-                </div>
-              )}
-
-              {/* Entry target + thesis */}
-              <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: item.thesis ? 10 : 0 }}>
-                <span style={{ fontSize: 10, color: "#333", textTransform: "uppercase", letterSpacing: 1 }}>Entry target:</span>
-                <input
-                  defaultValue={item.target || ""}
-                  onBlur={e => updateTarget(item.symbol, e.target.value)}
-                  placeholder="$ entry price"
-                  style={{ background: "transparent", border: "none", borderBottom: "1px solid #222", color: "#f5c842", fontFamily: "monospace", fontSize: 12, width: 90, padding: "2px 4px", outline: "none" }}/>
-                {atTarget && <Badge color="#00e5a0">🎯 BEREIKT</Badge>}
-                <button onClick={() => remove(item.symbol)} style={{ marginLeft: "auto", background: "transparent", border: "none", color: "#2a2a2a", cursor: "pointer", padding: "2px 6px" }}
-                  onMouseEnter={e => e.currentTarget.style.color = "#ff6b6b"}
-                  onMouseLeave={e => e.currentTarget.style.color = "#2a2a2a"}>
-                  <Icon name="trash" size={12}/>
-                </button>
-              </div>
-              {item.thesis && (
-                <div style={{ fontSize: 11, color: "#444", fontStyle: "italic", borderLeft: "2px solid #1a1a1a", paddingLeft: 10 }}>{item.thesis}</div>
-              )}
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
 
 // ── Portfolio ─────────────────────────────────────────────────────────────────
 const DEFAULT_POSITIONS = [
