@@ -59,146 +59,143 @@ async function fetchFull(symbol) {
   const sd = fin?.summaryDetail || {};
   const ap = fin?.assetProfile || {};
 
-  // ── PEG: robust multi-source calculation ─────────────────────────────────
+  // ── Yahoo PEG calculation (used as fallback) ──────────────────────────────
   const trailingEps = ks.trailingEps?.raw || null;
-  const forwardEps = ks.forwardEps?.raw || null;
-  const forwardPE = sd.forwardPE?.raw || ks.forwardPE?.raw || null;
-  const trailingPE = sd.trailingPE?.raw || ks.trailingPE?.raw || null;
+  const forwardEps  = ks.forwardEps?.raw  || null;
+  const forwardPE   = sd.forwardPE?.raw   || ks.forwardPE?.raw  || null;
+  const trailingPE  = sd.trailingPE?.raw  || ks.trailingPE?.raw || null;
 
-  // Detect recent stock split — data may be unreliable for 1-2 weeks post-split
-  const lastSplitDate = ks.lastSplitDate?.raw || null;
-  const daysSinceSplit = lastSplitDate
-    ? (Date.now() / 1000 - lastSplitDate) / 86400 : 999;
-  const recentSplit = daysSinceSplit < 14;
+  const lastSplitDate  = ks.lastSplitDate?.raw || null;
+  const daysSinceSplit = lastSplitDate ? (Date.now() / 1000 - lastSplitDate) / 86400 : 999;
+  const recentSplit    = daysSinceSplit < 14;
 
-  // Forward EPS growth (1yr analyst estimate)
   const forwardGrowth = trailingEps && forwardEps && trailingEps > 0
-    ? (forwardEps - trailingEps) / Math.abs(trailingEps)
-    : null;
-
-  // Multiple growth sources
-  const ttmGrowth = fd.earningsGrowth?.raw || null;       // YoY TTM actuals
-  const qtrGrowth = ks.earningsQuarterlyGrowth?.raw || null; // QoQ
-  const revGrowth = fd.revenueGrowth?.raw || null;         // Revenue fallback
-
-  // Sanity check: if trailing PE is wildly inconsistent with forward PE,
-  // trailing earnings base is distorted (bad year, split timing, etc.)
+    ? (forwardEps - trailingEps) / Math.abs(trailingEps) : null;
+  const ttmGrowth = fd.earningsGrowth?.raw || null;
+  const qtrGrowth = ks.earningsQuarterlyGrowth?.raw || null;
+  const revGrowth = fd.revenueGrowth?.raw || null;
   const trailingDistorted = !trailingPE || trailingPE <= 0 || trailingPE > 100
     || (forwardPE && trailingPE > forwardPE * 2.5);
 
-  let epsGrowthRaw, pegSource, usedPE;
-
+  let epsGrowthRaw, yahooPegSource, usedPE;
   if (recentSplit) {
-    // Post-split: Yahoo data unreliable — use forward PE / forward EPS growth only
-    // if we have it, else mark as unreliable
     if (forwardPE && forwardGrowth !== null && forwardGrowth > 0) {
       usedPE = forwardPE;
       epsGrowthRaw = forwardGrowth <= 1.0 ? forwardGrowth : Math.sqrt(forwardGrowth);
-      pegSource = forwardGrowth <= 1.0 ? "fwd*" : "fwd↓*"; // * = post-split caution
-    } else {
-      usedPE = null; // can't calculate reliably
-      epsGrowthRaw = 0;
-      pegSource = "split!";
-    }
+      yahooPegSource = forwardGrowth <= 1.0 ? "fwd*" : "fwd↓*";
+    } else { usedPE = null; epsGrowthRaw = 0; yahooPegSource = "split!"; }
   } else if (trailingDistorted && forwardPE && forwardGrowth !== null && forwardGrowth > 0) {
-    // Distorted trailing: MUST pair forward PE with forward growth consistently
     usedPE = forwardPE;
     epsGrowthRaw = forwardGrowth <= 1.0 ? forwardGrowth : Math.sqrt(forwardGrowth);
-    pegSource = forwardGrowth <= 1.0 ? "fwd" : "fwd↓";
+    yahooPegSource = forwardGrowth <= 1.0 ? "fwd" : "fwd↓";
   } else if (forwardGrowth !== null && forwardGrowth > 0 && forwardGrowth <= 1.0) {
-    // Clean trailing PE + moderate forward growth
-    usedPE = trailingPE;
-    epsGrowthRaw = forwardGrowth;
-    pegSource = "fwd";
+    usedPE = trailingPE; epsGrowthRaw = forwardGrowth; yahooPegSource = "fwd";
   } else if (ttmGrowth !== null && ttmGrowth > 0 && ttmGrowth <= 2.0) {
-    usedPE = trailingPE;
-    epsGrowthRaw = ttmGrowth;
-    pegSource = "ttm";
+    usedPE = trailingPE; epsGrowthRaw = ttmGrowth; yahooPegSource = "ttm";
   } else if (forwardGrowth !== null && forwardGrowth > 1.0) {
-    usedPE = trailingPE;
-    epsGrowthRaw = Math.sqrt(forwardGrowth);
-    pegSource = "fwd↓";
+    usedPE = trailingPE; epsGrowthRaw = Math.sqrt(forwardGrowth); yahooPegSource = "fwd↓";
   } else if (qtrGrowth !== null && qtrGrowth > 0) {
-    usedPE = trailingPE;
-    epsGrowthRaw = Math.min(qtrGrowth, 2.0);
-    pegSource = "qtr";
+    usedPE = trailingPE; epsGrowthRaw = Math.min(qtrGrowth, 2.0); yahooPegSource = "qtr";
   } else {
-    usedPE = trailingPE || forwardPE;
-    epsGrowthRaw = revGrowth || 0;
-    pegSource = "rev";
+    usedPE = trailingPE || forwardPE; epsGrowthRaw = revGrowth || 0; yahooPegSource = "rev";
   }
 
   const epsGrowthPct = epsGrowthRaw * 100;
-  const effectivePE = usedPE || forwardPE;
-  // PEG is null if post-split data unreliable or no valid inputs
-  const peg = (pegSource === "split!" || !effectivePE || epsGrowthPct <= 0)
-    ? null
-    : effectivePE / epsGrowthPct;
+  const effectivePE  = usedPE || forwardPE;
+  const yahooPeg = (yahooPegSource === "split!" || !effectivePE || epsGrowthPct <= 0)
+    ? null : effectivePE / epsGrowthPct;
 
-  // ── Winstgevendheid & cashflow ────────────────────────────────────────────
-  const grossMargin = (fd.grossMargins?.raw || 0) * 100;
+  // ── Other Yahoo metrics ───────────────────────────────────────────────────
+  const grossMargin    = (fd.grossMargins?.raw    || 0) * 100;
   const operatingMargin = (fd.operatingMargins?.raw || 0) * 100;
-  const roic = (fd.returnOnEquity?.raw || 0) * 100; // ROE als ROIC proxy
-
-  // FCF Margin = Free Cash Flow / Revenue
-  const fcf = fd.freeCashflow?.raw || null;
-  const revenue = fd.totalRevenue?.raw || null;
-  const fcfMargin = fcf && revenue ? (fcf / revenue) * 100 : null;
-
-  // FCF Yield = FCF per share / prijs
-  const sharesOut = ks.sharesOutstanding?.raw || null;
-  const fcfPerShare = fcf && sharesOut ? fcf / sharesOut : null;
-  const fcfYield = fcfPerShare && price ? (fcfPerShare / price) * 100 : null;
-
-  // ── Balans ────────────────────────────────────────────────────────────────
-  const totalDebt = fd.totalDebt?.raw || 0;
-  const totalCash = fd.totalCash?.raw || 0;
-  const ebitda = fd.ebitda?.raw || 0;
-  const netDebt = totalDebt - totalCash;
-  const netDebtEbitda = ebitda > 0 ? netDebt / ebitda : null;
-
-  // EV/EBITDA
+  const roic           = (fd.returnOnEquity?.raw  || 0) * 100;
+  const fcf            = fd.freeCashflow?.raw || null;
+  const revenue        = fd.totalRevenue?.raw || null;
+  const fcfMargin      = fcf && revenue ? (fcf / revenue) * 100 : null;
+  const sharesOut      = ks.sharesOutstanding?.raw || null;
+  const fcfPerShare    = fcf && sharesOut ? fcf / sharesOut : null;
+  const fcfYield       = fcfPerShare && price ? (fcfPerShare / price) * 100 : null;
+  const totalDebt      = fd.totalDebt?.raw || 0;
+  const totalCash      = fd.totalCash?.raw || 0;
+  const ebitda         = fd.ebitda?.raw || 0;
+  const netDebtEbitda  = ebitda > 0 ? (totalDebt - totalCash) / ebitda : null;
   const enterpriseValue = ks.enterpriseValue?.raw || null;
-  const evEbitda = enterpriseValue && ebitda > 0 ? enterpriseValue / ebitda : null;
-
-  // Short Interest %
-  const shortPct = ks.shortPercentOfFloat?.raw != null ? ks.shortPercentOfFloat.raw * 100 : null;
-
-  // ── Groei ─────────────────────────────────────────────────────────────────
-  const revenueGrowth = (fd.revenueGrowth?.raw || 0) * 100;
-  const marketCap = sd.marketCap?.raw || null;
+  const evEbitda       = enterpriseValue && ebitda > 0 ? enterpriseValue / ebitda : null;
+  const shortPct       = ks.shortPercentOfFloat?.raw != null ? ks.shortPercentOfFloat.raw * 100 : null;
+  const revenueGrowth  = (fd.revenueGrowth?.raw || 0) * 100;
+  const marketCap      = sd.marketCap?.raw || null;
 
   return {
     symbol: symbol.toUpperCase(),
     name: ap.longName || ap.shortName || symbol,
-    price,
-    change,
-    // Waardering
-    pe: effectivePE,
-    forwardPE,
-    peg,
-    pegSource,
-    evEbitda,
-    // Groei
-    epsGrowth: epsGrowthPct,
-    revenueGrowth,
-    // Winstgevendheid
-    grossMargin,
-    operatingMargin,
-    roic,
-    fcfMargin,
-    fcfYield,
-    // Balans
-    netDebtEbitda,
-    // Risico
-    shortPct,
-    // Meta
-    marketCap,
+    price, change,
+    pe: effectivePE, forwardPE,
+    // Yahoo PEG — kept for comparison/fallback
+    yahooPeg, yahooPegSource,
+    // These will be overridden by fetchCombined if Finnhub data available
+    peg: yahooPeg, pegSource: yahooPegSource,
+    evEbitda, epsGrowth: epsGrowthPct, revenueGrowth,
+    grossMargin, operatingMargin, roic, fcfMargin, fcfYield,
+    netDebtEbitda, shortPct, marketCap,
     sector: ap.sector || "—",
     logo: `https://logo.clearbit.com/${ap.website?.replace(/https?:\/\//, "").split("/")[0]}`,
-    currentEpsGrowth: epsGrowthRaw,
-    recentSplit,
-    pegSource,
+    currentEpsGrowth: epsGrowthRaw, recentSplit,
+  };
+}
+
+// ── Combined fetch: both PEGs explicit, no hidden primary ────────────────────
+// pegForward  = Yahoo analyst consensus → forward-looking, speculative
+// pegHistoric = Finnhub EPS CAGR        → backward-looking, conservative
+// Use both together; AI weighs them based on company type
+async function fetchCombined(symbol) {
+  const [yahooData, fhRaw] = await Promise.all([
+    fetchFull(symbol),
+    fetchFinnhub(symbol),
+  ]);
+  if (!yahooData) return null;
+
+  const fh = fhRaw?.error ? null : fhRaw;
+
+  // Forward PEG — Yahoo analyst consensus (forward EPS based)
+  // Best for growth companies where future earnings matter more than history
+  const pegForward     = yahooData.yahooPeg;
+  const pegForwardSrc  = yahooData.yahooPegSource;  // e.g. "fwd", "fwd↓", "ttm"
+
+  // Historic PEG — Finnhub 3Y/5Y EPS CAGR (realized growth)
+  // Conservative sanity check — what growth has actually been delivered
+  const pegHistoric    = fh?.pegAnnual ?? null;
+  const pegHistoricSrc = fh?.pegSource ?? null;     // e.g. "eps3Y", "rev3Y~"
+
+  // Divergence signal — helps identify speculative vs confirmed value
+  let pegDivergence = null;
+  if (pegForward != null && pegHistoric != null) {
+    const diff = Math.abs(pegForward - pegHistoric) / Math.max(pegForward, pegHistoric);
+    pegDivergence = {
+      pct: Math.round(diff * 100),
+      // Low divergence = confirmed value. High = market expects turnaround
+      signal: diff < 0.2 ? "confirmed"    // Both agree — high confidence
+             : diff < 0.5 ? "moderate"    // Some gap — reasonable
+             : pegForward < pegHistoric ? "turnaround" // Forward cheap, history expensive → market bets on growth
+             : "rerating",               // Forward expensive, history cheap → maybe priced in
+    };
+  }
+
+  return {
+    ...yahooData,
+    // Primary display PEG — use forward if available (it's what investors price in)
+    // clearly labelled so user knows what they're looking at
+    peg: pegForward ?? pegHistoric,
+    pegSource: pegForward != null ? `fwd:${pegForwardSrc}` : `hist:${pegHistoricSrc}`,
+    // Both exposed for comparison
+    pegForward, pegForwardSrc,
+    pegHistoric, pegHistoricSrc,
+    pegDivergence,
+    // Finnhub extras
+    fmp: fh ? { ...fh, source: "Finnhub" } : null,
+    epsGrowth3Y: fh?.epsGrowth3Y ?? null,
+    epsGrowth5Y: fh?.epsGrowth5Y ?? null,
+    fhPeTTM: fh?.peTTM ?? null,
+    recentSplit: yahooData.recentSplit,
   };
 }
 
@@ -551,9 +548,8 @@ function ShortlistTab({ shortlist, setShortlist }) {
     const out = {};
     const pegHist = {};
     for (const item of shortlist) {
-      const [d, finnhubData, histData] = await Promise.all([
-        fetchFull(item.symbol),
-        fetchFinnhub(item.symbol),
+      const [d, histData] = await Promise.all([
+        fetchCombined(item.symbol),
         db.getPegHistory(item.symbol),
       ]);
       if (d) {
@@ -570,7 +566,6 @@ function ShortlistTab({ shortlist, setShortlist }) {
           analystLow: fin?.targetLowPrice?.raw || null,
           numAnalysts: fin?.numberOfAnalystOpinions?.raw || null,
           recommendation: fin?.recommendationKey || null,
-          fmp: finnhubData?.error ? null : { ...finnhubData, source: "Finnhub" },
         };
         if (d.peg) db.savePegSnapshot(item.symbol, d.peg, d.pe, d.price, d.epsGrowth).catch(() => {});
       }
@@ -589,9 +584,263 @@ function ShortlistTab({ shortlist, setShortlist }) {
     setStocks(out);
     setPegHistory(pegHist);
     setRefreshing(false);
+  }, [shortlist]);
 
+  useEffect(() => { if (shortlist.length) refresh(); }, [shortlist.length]);
 
-// ── Portfolio ─────────────────────────────────────────────────────────────────
+  const add = async () => {
+    if (!form.symbol) return;
+    const entry = { symbol: form.symbol.toUpperCase(), target: parseFloat(form.target) || null, thesis: form.thesis, status: "Watching" };
+    await db.upsertShortlist(entry);
+    setShortlist(p => p.find(s => s.symbol === entry.symbol) ? p : [...p, { ...entry, addedAt: Date.now() }]);
+    setAdding(false); setForm({ symbol: "", target: "", thesis: "" });
+  };
+
+  const remove = async (sym) => { await db.deleteShortlist(sym); setShortlist(p => p.filter(s => s.symbol !== sym)); };
+  const updateStatus = async (sym, status) => { await db.updateShortlistStatus(sym, status); setShortlist(p => p.map(s => s.symbol === sym ? { ...s, status } : s)); };
+  const updateTarget = async (sym, target) => {
+    await SB.from("shortlist").update({ target: parseFloat(target) || null }).eq("symbol", sym);
+    setShortlist(p => p.map(s => s.symbol === sym ? { ...s, target: parseFloat(target) || null } : s));
+  };
+
+  const STATUSES = ["Watching", "Ready to Buy", "Bought", "Exited"];
+  const statusColor = { "Watching": "#444", "Ready to Buy": "#f5c842", "Bought": "#00e5a0", "Exited": "#ff6b6b" };
+  const recColor = { "strong_buy": "#00e5a0", "buy": "#7be0c0", "hold": "#f5c842", "underperform": "#ff9966", "sell": "#ff6b6b" };
+
+  const calcScore = (s, item) => {
+    if (!s) return null;
+    let score = 50;
+    if (s.week52High && s.week52Low) {
+      const pos = (s.price - s.week52Low) / (s.week52High - s.week52Low);
+      score -= (pos - 0.5) * 40;
+    }
+    if (s.analystTarget && s.price) score += Math.min(((s.analystTarget - s.price) / s.price) * 100, 30);
+    const peg = s.pegForward ?? s.pegHistoric;
+    if (peg) score += peg < 0.8 ? 15 : peg < 1.5 ? 5 : -10;
+    if (item.target && s.price <= item.target) score += 20;
+    return Math.max(0, Math.min(100, Math.round(score)));
+  };
+
+  const scoreLabel = (score) => {
+    if (score === null) return ["—", "#444"];
+    if (score >= 70) return ["BUY ZONE", "#00e5a0"];
+    if (score >= 50) return ["FAIR", "#f5c842"];
+    return ["EXPENSIVE", "#ff6b6b"];
+  };
+
+  const pegContext = (sym, currentPeg) => {
+    const h = pegHistory[sym];
+    if (!h || h.count < 3) return null;
+    const pct = ((currentPeg - h.min) / (h.max - h.min)) * 100;
+    const label = pct < 30 ? "Near low ✓" : pct < 70 ? "Mid range" : "Near high ⚠";
+    const color = pct < 30 ? "#00e5a0" : pct < 70 ? "#f5c842" : "#ff6b6b";
+    return { pct, label, color, min: h.min, max: h.max, avg: h.avg, count: h.count };
+  };
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+        <span style={{ color: "#444", fontSize: 12, fontFamily: "monospace" }}>{shortlist.length} on watchlist</span>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button onClick={refresh} disabled={refreshing}
+            style={{ background: "#0a0a0a", border: "1px solid #1e1e1e", borderRadius: 8, color: refreshing ? "#2a2a2a" : "#555", padding: "8px 13px", cursor: "pointer", display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}>
+            {refreshing ? <Spinner/> : <Icon name="refresh" size={13}/>}
+          </button>
+          <button onClick={() => setAdding(true)}
+            style={{ background: "#00e5a0", border: "none", borderRadius: 8, color: "#000", padding: "8px 16px", cursor: "pointer", fontSize: 12, fontWeight: 700 }}>
+            + Add
+          </button>
+        </div>
+      </div>
+
+      {adding && (
+        <div style={{ background: "#070707", border: "1px solid #1e1e1e", borderRadius: 12, padding: 16, marginBottom: 14 }}>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-end" }}>
+            {[["Symbol", "symbol", 80], ["Entry $", "target", 90], ["Thesis", "thesis", 200]].map(([label, key, w]) => (
+              <div key={key}>
+                <div style={{ fontSize: 10, color: "#444", letterSpacing: 1, textTransform: "uppercase", marginBottom: 4 }}>{label}</div>
+                <input value={form[key]} onChange={e => setForm(p => ({ ...p, [key]: e.target.value }))}
+                  style={{ width: w, background: "#0d0d0d", border: "1px solid #222", borderRadius: 6, color: "#d0d0d0", padding: "8px 10px", fontSize: 13, fontFamily: "monospace" }}/>
+              </div>
+            ))}
+            <button onClick={add} style={{ background: "#00e5a0", border: "none", borderRadius: 8, color: "#000", padding: "8px 14px", fontWeight: 700, cursor: "pointer" }}>Save</button>
+            <button onClick={() => setAdding(false)} style={{ background: "transparent", border: "1px solid #1e1e1e", borderRadius: 8, color: "#444", padding: "8px 12px", cursor: "pointer" }}>Cancel</button>
+          </div>
+        </div>
+      )}
+
+      {shortlist.length === 0 && !adding && (
+        <div style={{ textAlign: "center", padding: 60, color: "#222", fontFamily: "monospace" }}>
+          <div style={{ fontSize: 28, marginBottom: 8 }}>★</div>
+          <div>Shortlist empty — add stocks to track</div>
+        </div>
+      )}
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        {shortlist.map(item => {
+          const s = stocks[item.symbol];
+          const score = calcScore(s, item);
+          const [signalLabel, signalColor] = scoreLabel(score);
+          const week52Pct = s?.week52High && s?.week52Low
+            ? ((s.price - s.week52Low) / (s.week52High - s.week52Low)) * 100 : null;
+          const analystUpside = s?.analystTarget && s?.price
+            ? ((s.analystTarget - s.price) / s.price) * 100 : null;
+          const atTarget = s && item.target && s.price <= item.target;
+          const ctx = (s?.pegForward ?? s?.pegHistoric) != null
+            ? pegContext(item.symbol, s.pegForward ?? s.pegHistoric) : null;
+
+          return (
+            <div key={item.symbol} style={{ background: "#070707", border: `1px solid ${atTarget ? "#00e5a033" : score >= 70 ? "#00e5a018" : "#141414"}`, borderRadius: 14, overflow: "hidden" }}>
+
+              {/* Top bar */}
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "14px 16px 10px" }}>
+                <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                  {s?.logo && <img src={s.logo} alt="" style={{ width: 28, height: 28, borderRadius: 7, objectFit: "contain", background: "#111", padding: 3 }} onError={e => e.target.style.display="none"}/>}
+                  <div>
+                    <div style={{ fontFamily: "monospace", fontSize: 15, fontWeight: 700, color: "#fff" }}>{item.symbol}</div>
+                    <div style={{ fontSize: 10, color: "#444", marginTop: 1, maxWidth: 140, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{s?.name || "—"}</div>
+                  </div>
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 5 }}>
+                  <div style={{ background: signalColor + "22", border: `1px solid ${signalColor}44`, borderRadius: 6, padding: "3px 9px", fontSize: 10, fontWeight: 700, color: signalColor, fontFamily: "monospace" }}>
+                    {score !== null ? `${score} · ${signalLabel}` : "…"}
+                  </div>
+                  <select value={item.status} onChange={e => updateStatus(item.symbol, e.target.value)}
+                    style={{ background: "#0d0d0d", border: `1px solid ${statusColor[item.status]}33`, borderRadius: 5, color: statusColor[item.status], padding: "3px 7px", fontSize: 10, fontFamily: "monospace", cursor: "pointer" }}>
+                    {STATUSES.map(st => <option key={st}>{st}</option>)}
+                  </select>
+                </div>
+              </div>
+
+              {/* Price row */}
+              <div style={{ display: "flex", alignItems: "baseline", gap: 10, padding: "0 16px 12px" }}>
+                <span style={{ fontFamily: "monospace", fontSize: 24, fontWeight: 700, color: "#e0e0e0" }}>
+                  {s ? fmt.price(s.price) : <Spinner/>}
+                </span>
+                {s && <span style={{ fontFamily: "monospace", fontSize: 12, color: s.change >= 0 ? "#00e5a0" : "#ff6b6b", fontWeight: 600 }}>
+                  {fmt.pct(s.change)} today
+                </span>}
+                {analystUpside !== null && (
+                  <span style={{ fontFamily: "monospace", fontSize: 11, color: analystUpside >= 10 ? "#00e5a0" : "#888", marginLeft: "auto" }}>
+                    target {analystUpside >= 0 ? "+" : ""}{analystUpside.toFixed(0)}%
+                    {s?.recommendation && <span style={{ color: recColor[s.recommendation] || "#888", marginLeft: 6 }}>· {s.recommendation?.replace("_", " ")}</span>}
+                  </span>
+                )}
+              </div>
+
+              {/* 52-week bar */}
+              {week52Pct !== null && (
+                <div style={{ padding: "0 16px 12px" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
+                    <span style={{ fontSize: 9, color: "#2a2a2a", fontFamily: "monospace" }}>{fmt.price(s.week52Low)}</span>
+                    <span style={{ fontSize: 9, color: "#444", fontFamily: "monospace" }}>52W · {week52Pct.toFixed(0)}% of range</span>
+                    <span style={{ fontSize: 9, color: "#2a2a2a", fontFamily: "monospace" }}>{fmt.price(s.week52High)}</span>
+                  </div>
+                  <div style={{ height: 5, background: "#111", borderRadius: 3, position: "relative" }}>
+                    <div style={{ position: "absolute", left: 0, width: `${week52Pct}%`, height: "100%", background: week52Pct < 30 ? "#00e5a0" : week52Pct < 70 ? "#f5c842" : "#ff6b6b", borderRadius: 3 }}/>
+                    <div style={{ position: "absolute", left: `${week52Pct}%`, top: -3, width: 2, height: 11, background: "#fff", borderRadius: 1, transform: "translateX(-50%)" }}/>
+                    {item.target && s?.week52Low && s?.week52High && (
+                      <div style={{ position: "absolute", left: `${Math.max(2, Math.min(98, ((item.target - s.week52Low) / (s.week52High - s.week52Low)) * 100))}%`, top: -6, fontSize: 8, color: "#f5c842", transform: "translateX(-50%)", fontFamily: "monospace" }}>▼</div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* PEG — two perspectives */}
+              <div style={{ margin: "0 16px 12px", background: "#0a0a0a", borderRadius: 8, padding: "10px 12px" }}>
+                <div style={{ fontSize: 9, color: "#333", textTransform: "uppercase", letterSpacing: 1, marginBottom: 8 }}>PEG Ratio — Two Perspectives</div>
+                <div style={{ display: "flex", gap: 0 }}>
+                  {/* Forward PEG */}
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 9, color: "#888", marginBottom: 1 }}>Forward</div>
+                    <div style={{ fontSize: 8, color: "#2a2a2a", marginBottom: 4 }}>analyst consensus</div>
+                    <div style={{ fontFamily: "monospace", fontSize: 20, fontWeight: 700, color: s?.recentSplit ? "#f5c842" : pegColor(s?.pegForward) }}>
+                      {s?.recentSplit ? "split⚠" : s?.pegForward != null ? fmt.num(s.pegForward) : "—"}
+                    </div>
+                    <div style={{ fontSize: 8, color: "#2a2a2a", marginTop: 2 }}>{s?.pegForwardSrc || "—"}</div>
+                  </div>
+                  <div style={{ width: 1, background: "#1a1a1a", margin: "0 10px" }}/>
+                  {/* Historic PEG */}
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 9, color: "#888", marginBottom: 1 }}>Historic</div>
+                    <div style={{ fontSize: 8, color: "#2a2a2a", marginBottom: 4 }}>realized EPS CAGR</div>
+                    <div style={{ fontFamily: "monospace", fontSize: 20, fontWeight: 700, color: pegColor(s?.pegHistoric) }}>
+                      {s?.pegHistoric != null ? fmt.num(s.pegHistoric) : "—"}
+                    </div>
+                    <div style={{ fontSize: 8, color: "#2a2a2a", marginTop: 2 }}>{s?.pegHistoricSrc || "no data"}</div>
+                  </div>
+                  <div style={{ width: 1, background: "#1a1a1a", margin: "0 10px" }}/>
+                  {/* Own history */}
+                  <div style={{ flex: 1.3 }}>
+                    <div style={{ fontSize: 9, color: "#888", marginBottom: 1 }}>vs Own History</div>
+                    <div style={{ fontSize: 8, color: "#2a2a2a", marginBottom: 4 }}>{ctx?.count || 0} snapshots</div>
+                    {ctx ? (
+                      <>
+                        <div style={{ fontSize: 11, fontWeight: 700, color: ctx.color }}>{ctx.label}</div>
+                        <div style={{ marginTop: 4, height: 3, background: "#1a1a1a", borderRadius: 2, position: "relative" }}>
+                          <div style={{ position: "absolute", left: `${Math.max(2, Math.min(96, ctx.pct))}%`, top: -3, width: 2, height: 9, background: ctx.color, borderRadius: 1, transform: "translateX(-50%)" }}/>
+                        </div>
+                        <div style={{ display: "flex", justifyContent: "space-between", marginTop: 3 }}>
+                          <span style={{ fontSize: 8, color: "#2a2a2a", fontFamily: "monospace" }}>{fmt.num(ctx.min)}</span>
+                          <span style={{ fontSize: 8, color: "#2a2a2a", fontFamily: "monospace" }}>{fmt.num(ctx.avg)}</span>
+                          <span style={{ fontSize: 8, color: "#2a2a2a", fontFamily: "monospace" }}>{fmt.num(ctx.max)}</span>
+                        </div>
+                      </>
+                    ) : <div style={{ fontSize: 10, color: "#2a2a2a" }}>building…</div>}
+                  </div>
+                </div>
+                {/* Divergence interpretation */}
+                {s?.pegDivergence && (() => {
+                  const { signal, pct } = s.pegDivergence;
+                  const cfg = {
+                    confirmed:  { color: "#00e5a0", text: `✓ Both agree (${pct}% diff) — high confidence` },
+                    moderate:   { color: "#f5c842", text: `~ ${pct}% gap between forward and historic` },
+                    turnaround: { color: "#f5c842", text: `⚡ Forward cheap, history expensive — market bets on growth acceleration` },
+                    rerating:   { color: "#ff6b6b", text: `⚠ Forward expensive vs history — growth may already be priced in` },
+                  }[signal] || { color: "#555", text: "" };
+                  return <div style={{ marginTop: 8, fontSize: 10, color: cfg.color, lineHeight: 1.5 }}>{cfg.text}</div>;
+                })()}
+              </div>
+
+              {/* Key metrics 2×2 */}
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, padding: "0 16px 12px" }}>
+                {[
+                  ["fwd P/E", fmt.num(s?.forwardPE), s?.forwardPE < 25 ? "#00e5a0" : s?.forwardPE < 40 ? "#f5c842" : "#ff6b6b"],
+                  ["EPS Growth", fmt.pct(s?.epsGrowth), "#888"],
+                  ["Gross Margin", fmt.pct(s?.grossMargin), "#888"],
+                  ["EPS 3Y CAGR", s?.epsGrowth3Y != null ? fmt.pct(s.epsGrowth3Y) : "—", "#888"],
+                ].map(([label, val, color]) => (
+                  <div key={label} style={{ background: "#0a0a0a", borderRadius: 7, padding: "8px 10px" }}>
+                    <div style={{ fontSize: 9, color: "#333", textTransform: "uppercase", letterSpacing: 0.8, marginBottom: 3 }}>{label}</div>
+                    <div style={{ fontFamily: "monospace", fontSize: 14, fontWeight: 600, color }}>{val}</div>
+                  </div>
+                ))}
+              </div>
+
+              {/* Entry target + actions */}
+              <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 16px 14px", borderTop: "1px solid #0e0e0e" }}>
+                <span style={{ fontSize: 10, color: "#333", whiteSpace: "nowrap" }}>Entry $</span>
+                <input
+                  defaultValue={item.target || ""}
+                  onBlur={e => updateTarget(item.symbol, e.target.value)}
+                  placeholder="target price"
+                  style={{ flex: 1, background: "transparent", border: "none", borderBottom: "1px solid #1e1e1e", color: "#f5c842", fontFamily: "monospace", fontSize: 13, padding: "2px 4px", outline: "none" }}/>
+                {atTarget && <span style={{ fontSize: 10, color: "#00e5a0", fontWeight: 700 }}>🎯 HIT</span>}
+                {item.thesis && <span style={{ fontSize: 10, color: "#2a2a2a", maxWidth: 120, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={item.thesis}>{item.thesis}</span>}
+                <button onClick={() => remove(item.symbol)}
+                  style={{ background: "transparent", border: "none", color: "#2a2a2a", cursor: "pointer", padding: 4, marginLeft: "auto" }}
+                  onMouseEnter={e => e.currentTarget.style.color = "#ff6b6b"}
+                  onMouseLeave={e => e.currentTarget.style.color = "#2a2a2a"}>
+                  <Icon name="trash" size={12}/>
+                </button>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
 const DEFAULT_POSITIONS = [
   { symbol: "TSM",  shares: 90,  avgCost: 229.997, thesis: "Foundry monopoly — AI wafer ramp thesis" },
   { symbol: "BAC",  shares: 128, avgCost: 52.425,  thesis: "Bank of America — interest rate play" },
@@ -623,23 +872,20 @@ function PortfolioTab({ positions, setPositions }) {
     const value = p.shares * price;
     const gainPct = ((price - p.avgCost) / p.avgCost) * 100;
     const weight = (value / totalValue) * 100;
-    const fwdGrowth = f?.trailingEps && f?.forwardEps && f.trailingEps > 0
-      ? (f.forwardEps - f.trailingEps) / Math.abs(f.trailingEps) : null;
-    const ttmGrowth = f?.earningsGrowth;
-    const growthRaw = fwdGrowth && fwdGrowth > 0 && fwdGrowth <= 1.0 ? fwdGrowth
-      : ttmGrowth && ttmGrowth > 0 ? ttmGrowth
-      : fwdGrowth && fwdGrowth > 1.0 ? Math.sqrt(fwdGrowth) : null;
-    const pe = f?.trailingPE && f.trailingPE < 150 ? f.trailingPE : f?.forwardPE;
-    const peg = pe && growthRaw ? pe / (growthRaw * 100) : null;
     const upside = f?.targetMeanPrice && price ? ((f.targetMeanPrice - price) / price) * 100 : null;
+
+    // Use combined PEG (Finnhub primary) stored in f.peg by refresh()
+    const peg = f?.peg ?? null;
+    const pegSource = f?.pegSource ?? null;
+
     return {
       symbol: p.symbol, thesis: p.thesis, shares: p.shares,
       avgCost: p.avgCost, currentPrice: price?.toFixed(2),
       gainLossPct: gainPct?.toFixed(1), portfolioWeight: weight?.toFixed(1),
-      forwardPE: f?.forwardPE?.toFixed(1), peg: peg?.toFixed(2),
+      forwardPE: f?.forwardPE?.toFixed(1),
+      peg: peg?.toFixed(2), pegSource,
       analystUpside: upside?.toFixed(1), analystRec: f?.recommendation,
       revenueGrowth: f?.revenueGrowth ? (f.revenueGrowth * 100).toFixed(1) : null,
-      // Finnhub independent data
       fhPeg: fh?.pegAnnual?.toFixed(2) || null,
       fhPegSource: fh?.pegSource || null,
       fhEpsGrowth3Y: fh?.epsGrowth3Y?.toFixed(1) || null,
@@ -656,27 +902,25 @@ function PortfolioTab({ positions, setPositions }) {
     setLoadingCash(true);
     setCashAdvice(null);
     const portfolioData = buildPortfolioData();
-    const prompt = `You are a rational, long-term investment analyst. A portfolio investor wants to deploy $${amount.toFixed(0)} of new cash.
+    const prompt = `You are a rational, long-term investment analyst deploying $${amount.toFixed(0)} of new cash.
 
 CURRENT PORTFOLIO (total value $${totalValue.toFixed(0)}):
 ${portfolioData.map(p => `${p.symbol}: weight ${p.portfolioWeight}%
-  Yahoo: fwdPE ${p.forwardPE}, PEG ${p.peg}, analyst upside ${p.analystUpside}%, rec ${p.analystRec}
-  Finnhub: PEG ${p.fhPeg || "n/a"} (${p.fhPegSource || "—"}), EPS growth 3Y ${p.fhEpsGrowth3Y || "n/a"}%, 5Y ${p.fhEpsGrowth5Y || "n/a"}%
+  PEG forward (analyst consensus): ${p.peg || "n/a"} — forward-looking
+  PEG historic (realized CAGR):    ${p.fhPeg || "n/a"} [${p.fhPegSource || "—"}] — conservative
+  EPS 3Y: ${p.fhEpsGrowth3Y || "n/a"}% | fwd P/E: ${p.forwardPE} | upside: ${p.analystUpside}%
   Thesis: ${p.thesis}`).join('\n')}
 
-NEW CASH TO DEPLOY: $${amount.toFixed(0)} (${((amount / totalValue) * 100).toFixed(1)}% of portfolio)
+CASH TO DEPLOY: $${amount.toFixed(0)} (${((amount / totalValue) * 100).toFixed(1)}% of portfolio)
 
-Use BOTH Yahoo and Finnhub data for conviction. Where both sources agree on a low PEG, conviction is higher.
-
-Rules for cash deployment:
-- Prefer positions with lowest PEG (confirmed by both sources) and highest analyst upside
-- Avoid adding to positions already >25% of portfolio
-- Suggest splitting across 1-3 positions max — don't over-diversify
-- Be specific: how many shares to buy at current price for each recommendation
-- Each DEGIRO trade costs ~€4, so minimum allocation per position should be meaningful (>$500)
+For each recommendation, cite both PEGs. High conviction = both forward AND historic PEG are low.
+- Prefer: low forward PEG + confirmed by historic PEG + high analyst upside + weight <25%
+- Avoid: positions already >25% weight
+- Split across 1-3 positions max, min $500 per trade (DEGIRO fee: ~€4)
+- Specify exact share count at current price
 
 Return ONLY valid JSON:
-{"summary":"one sentence on deployment strategy","allocations":[{"symbol":"X","amount":1234,"shares":5,"rationale":"brief reason referencing valuation data","conviction":"high or medium"}]}`;
+{"summary":"one sentence strategy","allocations":[{"symbol":"X","amount":1234,"shares":5,"rationale":"cite forward AND historic PEG in reasoning","conviction":"high or medium"}]}`;
 
     try {
       const response = await fetch("/api/analyze", {
@@ -718,26 +962,35 @@ Return ONLY valid JSON:
       // Only fetch fundamentals for stocks
       if (p.assetType === "stock") {
         try {
-          const [summaryResult, fhResult] = await Promise.all([
-            yahooSummary(ticker),
-            fetchFinnhub(p.symbol),
-          ]);
-          const fin = summaryResult?.quoteSummary?.result?.[0];
-          const fd = fin?.financialData || {};
-          const ks = fin?.defaultKeyStatistics || {};
-          const sdet = fin?.summaryDetail || {};
-          fOut[p.symbol] = {
-            forwardPE: sdet.forwardPE?.raw || ks.forwardPE?.raw,
-            trailingPE: sdet.trailingPE?.raw,
-            earningsGrowth: fd.earningsGrowth?.raw,
-            forwardEps: ks.forwardEps?.raw,
-            trailingEps: ks.trailingEps?.raw,
-            targetMeanPrice: fd.targetMeanPrice?.raw,
-            recommendation: fd.recommendationKey,
-            grossMargins: fd.grossMargins?.raw,
-            revenueGrowth: fd.revenueGrowth?.raw,
-          };
-          if (!fhResult?.error) fhOut[p.symbol] = fhResult;
+          const combined = await fetchCombined(p.symbol);
+          if (combined) {
+            // Merge fundamentals from fetchCombined into fOut
+            fOut[p.symbol] = {
+              forwardPE: combined.forwardPE,
+              trailingPE: combined.pe,
+              earningsGrowth: combined.epsGrowth / 100,
+              targetMeanPrice: null, // fetched separately below
+              recommendation: null,
+              grossMargins: combined.grossMargin / 100,
+              revenueGrowth: combined.revenueGrowth / 100,
+              // Keep raw Yahoo summary data too for analyst targets
+              _summary: null,
+            };
+            // Fetch analyst data from Yahoo summary separately
+            const sd = await yahooSummary(ticker);
+            const fin = sd?.quoteSummary?.result?.[0];
+            if (fin) {
+              fOut[p.symbol].targetMeanPrice = fin.financialData?.targetMeanPrice?.raw || null;
+              fOut[p.symbol].recommendation = fin.financialData?.recommendationKey || null;
+              fOut[p.symbol].forwardEps = fin.defaultKeyStatistics?.forwardEps?.raw || null;
+              fOut[p.symbol].trailingEps = fin.defaultKeyStatistics?.trailingEps?.raw || null;
+            }
+            // Store Finnhub data separately
+            if (combined.fmp) fhOut[p.symbol] = combined.fmp;
+            // Use combined PEG (Finnhub primary) for display
+            fOut[p.symbol].peg = combined.peg;
+            fOut[p.symbol].pegSource = combined.pegSource;
+          }
         } catch {}
       }
     }
@@ -769,24 +1022,28 @@ Return ONLY valid JSON:
     setAdvice(null);
     const portfolioData = buildPortfolioData();
 
-    const prompt = `You are a rational, long-term investment analyst. Your primary rule: DO NOT TRADE unless there is a compelling, data-driven reason. Over-trading destroys returns through taxes, spreads, and timing mistakes.
+    const prompt = `You are a rational, long-term investment analyst. Your primary rule: DO NOT TRADE unless there is a compelling, data-driven reason.
 
 PORTFOLIO (value $${totalValue.toFixed(0)}, return ${ret.toFixed(1)}%):
-${portfolioData.map(p => `${p.symbol}: ${p.shares} shares, avg $${p.avgCost}, now $${p.currentPrice}, gain ${p.gainLossPct}%, weight ${p.portfolioWeight}%
-  Yahoo: fwdPE ${p.forwardPE}, PEG ${p.peg}, analyst upside ${p.analystUpside}%, rec ${p.analystRec}
-  Finnhub: PEG ${p.fhPeg || "n/a"} (${p.fhPegSource || "—"}), EPS growth 3Y ${p.fhEpsGrowth3Y || "n/a"}%, ROIC ${p.fhRoic || "n/a"}%`).join('\n')}
+${portfolioData.map(p => `${p.symbol}: ${p.shares} shares @ avg $${p.avgCost}, now $${p.currentPrice}, gain ${p.gainLossPct}%, weight ${p.portfolioWeight}%
+  PEG forward (analyst consensus): ${p.peg || "n/a"} [${p.pegSource || "—"}] — forward-looking, speculative
+  PEG historic (realized CAGR):    ${p.fhPeg || "n/a"} [${p.fhPegSource || "—"}] — conservative, backward-looking
+  EPS growth 3Y: ${p.fhEpsGrowth3Y || "n/a"}% | fwd P/E: ${p.forwardPE} | analyst upside: ${p.analystUpside}% | rec: ${p.analystRec}`).join('\n')}
 
-Use BOTH Yahoo and Finnhub data. Where they agree, the signal is stronger. Where they diverge, be more cautious.
+PEG INTERPRETATION GUIDE:
+- For growth companies (MRVL, MU, TSM): weight forward PEG more — they trade on future earnings
+- For mature/cyclical companies: weight historic PEG more — forward estimates are often too optimistic  
+- When forward << historic: market prices in turnaround — higher risk, higher potential
+- When both are low: strongest buy signal — confirmed AND expected cheap
 
-STRICT RULES — only recommend action if ALL conditions are met:
-- TRIM: position weight >20% AND (PEG >2.5 OR analyst upside <5%). Otherwise HOLD.
-- ADD: analyst upside >25% AND PEG <1.5 AND position weight <15%. Otherwise HOLD.
-- REBALANCE move: only suggest if the valuation gap between from/to is >40% on PEG basis.
+STRICT RULES:
+- TRIM: weight >20% AND (forward PEG >2.5 OR analyst upside <5%). Otherwise HOLD.
+- ADD: analyst upside >25% AND forward PEG <1.5 AND weight <15%. Otherwise HOLD.
 - Default to HOLD. A good investor does nothing most of the time.
-- Each trade costs ~€4 in DEGIRO fees — factor this into small positions.
+- Each trade costs ~€4 in DEGIRO fees.
 
-Return ONLY valid JSON, no other text:
-{"summary":"one sentence assessment","signals":[{"symbol":"X","signal":"TRIM or HOLD or ADD","reason":"brief data-driven reason referencing both sources","action":"specific action or null if HOLD"}],"rebalance":[{"from":"X","to":"Y","rationale":"brief reason","urgency":"high or medium or low"}]}`;
+Return ONLY valid JSON:
+{"summary":"one sentence assessment","signals":[{"symbol":"X","signal":"TRIM or HOLD or ADD","reason":"data-driven reason citing both PEGs where relevant","action":"specific action or null if HOLD"}],"rebalance":[{"from":"X","to":"Y","rationale":"brief reason","urgency":"high or medium or low"}]}`;
 
     try {
       const response = await fetch("/api/analyze", {
