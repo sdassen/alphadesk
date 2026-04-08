@@ -1921,7 +1921,6 @@ function ValuationTab({ positions, shortlist }) {
     </div>
   );
 }
-}
 function MarktTab() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
