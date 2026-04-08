@@ -1,8 +1,9 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { createClient } from "@supabase/supabase-js";
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip,
-  ResponsiveContainer, ReferenceLine, Legend
+  ResponsiveContainer, ReferenceLine, Legend,
+  ComposedChart, Area,
 } from "recharts";
 
 // ── Config ────────────────────────────────────────────────────────────────────
@@ -281,6 +282,7 @@ const db = {
       type: "rebalance", summary, signals, override, override_reason: overrideReason
     });
   },
+  async savePegSnapshot(symbol, peg, pe, price, epsGrowth) {
     await SB.from("peg_history").upsert({
       symbol, peg, pe, price, eps_growth: epsGrowth,
       date: new Date().toISOString().split("T")[0]
@@ -1431,7 +1433,495 @@ Return ONLY valid JSON:
   );
 }
 
-// ── Markt Tab ─────────────────────────────────────────────────────────────────
+// ── Valuation Tab ─────────────────────────────────────────────────────────────
+// ── Valuation Tab (v2) ────────────────────────────────────────────────────────
+// Two-stage growth model + historical PE range bands + user-editable assumptions
+function ValuationTab({ positions, shortlist }) {
+  const [selected, setSelected]         = useState(null);
+  const [data, setData]                 = useState(null);
+  const [loading, setLoading]           = useState(false);
+  const [growthYears, setGrowthYears]   = useState(3);
+  const [customG1, setCustomG1]         = useState("");   // phase 1 growth override
+  const [customG2, setCustomG2]         = useState("");   // terminal growth override
+  const [customPE, setCustomPE]         = useState("");   // PE multiple override
+  const [showAssumptions, setShowAssumptions] = useState(false);
+
+  // All stock symbols from portfolio + shortlist
+  const allSymbols = [...new Set([
+    ...positions.filter(p => p.assetType !== "etf").map(p => p.symbol),
+    ...shortlist.map(s => s.symbol),
+  ])].sort();
+
+  useEffect(() => {
+    if (allSymbols.length && !selected) setSelected(allSymbols[0]);
+  }, [allSymbols.length]);
+
+  useEffect(() => {
+    if (selected) loadData(selected);
+  }, [selected]);
+
+  const loadData = async (symbol) => {
+    setLoading(true);
+    setData(null);
+    try {
+      const [priceHistory, fhRaw, yahooRaw] = await Promise.all([
+        fetchHistoricalPrices(symbol, 730), // 2 years of history
+        fetchFinnhub(symbol),
+        fetch(`/api/yahoo?symbol=${symbol}&endpoint=quoteSummary&modules=defaultKeyStatistics,summaryDetail,financialData`)
+          .then(r => r.json()),
+      ]);
+
+      const fin = yahooRaw?.quoteSummary?.result?.[0];
+      const fd  = fin?.financialData  || {};
+      const ks  = fin?.defaultKeyStatistics || {};
+      const sd  = fin?.summaryDetail  || {};
+      const fh  = fhRaw?.error ? null : fhRaw;
+
+      const currentPrice = fd.currentPrice?.raw  || sd.regularMarketPrice?.raw || null;
+      const trailingEps  = ks.trailingEps?.raw   || null;
+      const forwardEps   = ks.forwardEps?.raw    || null;
+      const trailingPE   = sd.trailingPE?.raw    || null;
+      const forwardPE    = sd.forwardPE?.raw     || ks.forwardPE?.raw || null;
+      const targetMean   = fd.targetMeanPrice?.raw || null;
+      const targetHigh   = fd.targetHighPrice?.raw || null;
+      const targetLow    = fd.targetLowPrice?.raw  || null;
+      const numAnalysts  = fd.numberOfAnalystOpinions?.raw || null;
+
+      // ── Growth rates ─────────────────────────────────────────────────────────
+      // Phase 1: near-term (1-3 yr) — analyst forward EPS preferred (most forward-looking)
+      const fwdGrowth1Y  = trailingEps && forwardEps && trailingEps > 0
+        ? (forwardEps - trailingEps) / Math.abs(trailingEps) : null;
+      // Yahoo long-term growth estimate (analyst consensus 5Y)
+      const ltGrowthYahoo = ks.pegRatio?.raw && forwardPE
+        ? null : null; // placeholder — we use Finnhub instead
+      const epsGrowth3Y   = fh?.epsGrowth3Y ? fh.epsGrowth3Y / 100 : null;
+      const epsGrowth5Y   = fh?.epsGrowth5Y ? fh.epsGrowth5Y / 100 : null;
+      const revGrowth3Y   = fh?.revenueGrowth3Y ? fh.revenueGrowth3Y / 100 : null;
+
+      // Phase 1 = forward-looking: analyst 1Y fwd > Finnhub 3Y historic
+      const g1Auto = fwdGrowth1Y ?? epsGrowth3Y ?? epsGrowth5Y ?? revGrowth3Y ?? 0.10;
+      // Phase 2 = terminal / normalised: always more conservative
+      // Use Finnhub 5Y or half of phase1, min 5% max 15%
+      const g2Auto = Math.min(0.15, Math.max(0.05,
+        epsGrowth5Y ?? (epsGrowth3Y ? epsGrowth3Y * 0.6 : 0.08)
+      ));
+
+      const g1 = g1Auto; // will be overridden by customG1 in render
+      const g2 = g2Auto;
+
+      // Growth source labels
+      const g1Source = fwdGrowth1Y  ? "analyst fwd 1Y"
+                     : epsGrowth3Y  ? "Finnhub 3Y CAGR"
+                     : epsGrowth5Y  ? "Finnhub 5Y CAGR"
+                     : revGrowth3Y  ? "rev 3Y CAGR~"
+                     : "est 10%";
+      const g2Source = epsGrowth5Y  ? "Finnhub 5Y"
+                     : epsGrowth3Y  ? "60% of 3Y"
+                     : "est 8%";
+
+      // ── Historical PE range (for realistic band bounds) ────────────────────
+      // Use price history + trailing EPS to reconstruct historical PE
+      const histPEs = priceHistory
+        .filter(p => p.close && trailingEps && trailingEps > 0)
+        .map(p => p.close / trailingEps)
+        .filter(pe => pe > 0 && pe < 200);
+
+      // Historical PE range — p25 to p75 for realistic band
+      histPEs.sort((a, b) => a - b);
+      const histPEMin = histPEs.length > 4
+        ? histPEs[Math.floor(histPEs.length * 0.10)] : (forwardPE ? forwardPE * 0.7 : 12);
+      const histPEMax = histPEs.length > 4
+        ? histPEs[Math.floor(histPEs.length * 0.90)] : (forwardPE ? forwardPE * 1.3 : 35);
+      const histPEMed = histPEs.length > 4
+        ? histPEs[Math.floor(histPEs.length * 0.50)] : (trailingPE || forwardPE || 20);
+
+      // Band PE multiples
+      // Bear = historical 10th percentile (stock at its cheapest historically)
+      // Base = historical median (neutral)
+      // Bull = historical 90th percentile (stock at its most expensive historically)
+      const peBear = histPEMin;
+      const peBase = histPEMed;
+      const peBull = histPEMax;
+
+      // Starting EPS for projection
+      const baseEps = forwardEps || trailingEps
+        || (currentPrice && forwardPE ? currentPrice / forwardPE : null);
+
+      // ── Build fair value bands (two-stage) ─────────────────────────────────
+      const bands = [];
+      const today = new Date();
+      const phase1Years = Math.min(growthYears, 3); // phase 1 = first 3 years max
+
+      for (let m = 0; m <= growthYears * 12; m++) {
+        const date = new Date(today);
+        date.setMonth(date.getMonth() + m);
+        const years = m / 12;
+
+        // Two-stage EPS projection
+        let projectedEps = baseEps;
+        if (projectedEps) {
+          if (years <= phase1Years) {
+            projectedEps = baseEps * Math.pow(1 + g1, years);
+          } else {
+            // Phase 1 end value × phase 2 growth for remaining years
+            const p1Eps = baseEps * Math.pow(1 + g1, phase1Years);
+            projectedEps = p1Eps * Math.pow(1 + g2, years - phase1Years);
+          }
+        }
+
+        bands.push({
+          date: date.toISOString().split("T")[0],
+          bull: projectedEps ? projectedEps * peBull : null,
+          base: projectedEps ? projectedEps * peBase : null,
+          bear: projectedEps ? projectedEps * peBear : null,
+        });
+      }
+
+      const histMap = {};
+      for (const p of priceHistory) histMap[p.date] = p.close;
+
+      setData({
+        symbol, currentPrice,
+        trailingEps, forwardEps, baseEps,
+        g1Auto, g2Auto, g1Source, g2Source,
+        peBear, peBase, peBull,
+        histPEMin, histPEMax, histPEMed,
+        histPEsCount: histPEs.length,
+        targetMean, targetHigh, targetLow, numAnalysts,
+        priceHistory, bands, histMap, fh,
+        fwdGrowth1Y, epsGrowth3Y, epsGrowth5Y, revGrowth3Y,
+      });
+    } catch (e) {
+      setData({ error: e.message });
+    }
+    setLoading(false);
+  };
+
+  // Apply user overrides to growth/PE, then recompute bands
+  const effectiveG1 = customG1 !== "" && !isNaN(parseFloat(customG1))
+    ? parseFloat(customG1) / 100 : data?.g1Auto ?? 0.10;
+  const effectiveG2 = customG2 !== "" && !isNaN(parseFloat(customG2))
+    ? parseFloat(customG2) / 100 : data?.g2Auto ?? 0.08;
+  const effectivePEBase = customPE !== "" && !isNaN(parseFloat(customPE))
+    ? parseFloat(customPE) : data?.peBase ?? 20;
+  // Scale bull/bear proportionally from custom base PE
+  const effectivePEBear = data
+    ? effectivePEBase * (data.peBear / (data.peBase || 1)) : data?.peBear;
+  const effectivePEBull = data
+    ? effectivePEBase * (data.peBull / (data.peBase || 1)) : data?.peBull;
+
+  // Recompute chart data with overrides applied
+  const chartData = useMemo(() => {
+    if (!data?.priceHistory || !data?.bands) return [];
+
+    const phase1Years = Math.min(growthYears, 3);
+    const baseEps = data.baseEps;
+
+    // Recompute bands with effective values
+    const today = new Date();
+    const bandMap = {};
+    for (let m = 0; m <= growthYears * 12; m++) {
+      const date = new Date(today);
+      date.setMonth(date.getMonth() + m);
+      const dateStr = date.toISOString().split("T")[0];
+      const years = m / 12;
+      let projectedEps = baseEps;
+      if (projectedEps) {
+        if (years <= phase1Years) {
+          projectedEps = baseEps * Math.pow(1 + effectiveG1, years);
+        } else {
+          const p1Eps = baseEps * Math.pow(1 + effectiveG1, phase1Years);
+          projectedEps = p1Eps * Math.pow(1 + effectiveG2, years - phase1Years);
+        }
+      }
+      bandMap[dateStr] = {
+        bull: projectedEps ? projectedEps * effectivePEBull : null,
+        base: projectedEps ? projectedEps * effectivePEBase : null,
+        bear: projectedEps ? projectedEps * effectivePEBear : null,
+      };
+    }
+
+    const allDates = new Set([
+      ...data.priceHistory.map(p => p.date),
+      ...Object.keys(bandMap),
+    ]);
+
+    return [...allDates].sort().map(date => {
+      const band  = bandMap[date];
+      const price = data.histMap[date];
+      return {
+        date: date.slice(5),
+        fullDate: date,
+        price: price != null ? parseFloat(price.toFixed(2)) : undefined,
+        bull:  band?.bull  != null ? parseFloat(band.bull.toFixed(2))  : undefined,
+        base:  band?.base  != null ? parseFloat(band.base.toFixed(2))  : undefined,
+        bear:  band?.bear  != null ? parseFloat(band.bear.toFixed(2))  : undefined,
+      };
+    });
+  }, [data, effectiveG1, effectiveG2, effectivePEBase, growthYears]);
+
+  // Valuation zone based on current price vs today's bands
+  const todayBands = chartData.find(d => d.fullDate === new Date().toISOString().split("T")[0])
+    || chartData.find(d => d.bear != null || d.base != null);
+  const cp = data?.currentPrice;
+  const valZone = cp && todayBands
+    ? cp < (todayBands.bear || 0)  ? { label: "DEEP VALUE",  color: "#00e5a0", desc: "Below bear band — market pricing in pessimism" }
+    : cp < (todayBands.base || 0)  ? { label: "BUY ZONE",    color: "#7be0c0", desc: "Between bear and base — attractive entry" }
+    : cp < (todayBands.bull || 0)  ? { label: "FAIR VALUE",  color: "#f5c842", desc: "Between base and bull — fairly priced" }
+    : { label: "EXPENSIVE",       color: "#ff6b6b", desc: "Above bull band — priced for perfection" }
+    : null;
+
+  // Upside to base band at end of projection
+  const lastBand = chartData[chartData.length - 1];
+  const upsideToBase = cp && lastBand?.base
+    ? ((lastBand.base - cp) / cp) * 100 : null;
+
+  const CustomTooltip = ({ active, payload, label }) => {
+    if (!active || !payload?.length) return null;
+    const hasPrice = payload.find(p => p.dataKey === "price");
+    const hasBand  = payload.find(p => p.dataKey === "base");
+    const discount = hasPrice && hasBand
+      ? ((hasPrice.value - hasBand.value) / hasBand.value) * 100 : null;
+    return (
+      <div style={{ background: "#0a0a0a", border: "1px solid #1e1e1e", borderRadius: 8, padding: "10px 14px", fontFamily: "monospace", fontSize: 11, minWidth: 160 }}>
+        <div style={{ color: "#444", marginBottom: 6 }}>{label}</div>
+        {payload.filter(p => p.value != null).map(p => (
+          <div key={p.dataKey} style={{ display: "flex", justifyContent: "space-between", gap: 16, marginBottom: 2 }}>
+            <span style={{ color: p.color }}>{p.dataKey}</span>
+            <span style={{ color: "#e0e0e0", fontWeight: 700 }}>${p.value.toFixed(2)}</span>
+          </div>
+        ))}
+        {discount != null && (
+          <div style={{ marginTop: 6, paddingTop: 6, borderTop: "1px solid #1a1a1a", color: discount < 0 ? "#00e5a0" : "#ff6b6b", fontSize: 10 }}>
+            {discount < 0 ? `${Math.abs(discount).toFixed(0)}% below base` : `${discount.toFixed(0)}% above base`}
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  const InputField = ({ label, value, onChange, placeholder, suffix = "%" }) => (
+    <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+      <span style={{ fontSize: 9, color: "#333", textTransform: "uppercase", letterSpacing: 1 }}>{label}</span>
+      <div style={{ display: "flex", alignItems: "center", gap: 4, background: "#0d0d0d", border: "1px solid #222", borderRadius: 6, padding: "4px 8px" }}>
+        <input
+          type="number" value={value} onChange={e => onChange(e.target.value)}
+          placeholder={placeholder}
+          style={{ width: 52, background: "transparent", border: "none", color: "#f5c842", fontFamily: "monospace", fontSize: 12, outline: "none" }}
+        />
+        <span style={{ color: "#333", fontSize: 11 }}>{suffix}</span>
+      </div>
+    </div>
+  );
+
+  return (
+    <div>
+      {/* ── Symbol selector + controls ── */}
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 16, alignItems: "center" }}>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+          {[...new Set([
+            ...positions.filter(p => p.assetType !== "etf").map(p => p.symbol),
+            ...shortlist.map(s => s.symbol),
+          ])].sort().map(sym => (
+            <button key={sym} onClick={() => { setSelected(sym); setCustomG1(""); setCustomG2(""); setCustomPE(""); }}
+              style={{ background: selected === sym ? "#00e5a022" : "#0a0a0a", border: `1px solid ${selected === sym ? "#00e5a066" : "#1e1e1e"}`, borderRadius: 7, color: selected === sym ? "#00e5a0" : "#555", padding: "6px 12px", cursor: "pointer", fontFamily: "monospace", fontSize: 12, fontWeight: selected === sym ? 700 : 400 }}>
+              {sym}
+            </button>
+          ))}
+        </div>
+        <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8 }}>
+          <span style={{ fontSize: 11, color: "#333" }}>Horizon</span>
+          {[1, 2, 3, 5].map(y => (
+            <button key={y} onClick={() => setGrowthYears(y)}
+              style={{ background: growthYears === y ? "#f5c84222" : "#0a0a0a", border: `1px solid ${growthYears === y ? "#f5c84266" : "#1e1e1e"}`, borderRadius: 6, color: growthYears === y ? "#f5c842" : "#555", padding: "5px 10px", cursor: "pointer", fontSize: 11, fontFamily: "monospace" }}>
+              {y}Y
+            </button>
+          ))}
+          <button onClick={() => setShowAssumptions(v => !v)}
+            style={{ background: showAssumptions ? "#f5c84222" : "#0a0a0a", border: `1px solid ${showAssumptions ? "#f5c84244" : "#1e1e1e"}`, borderRadius: 6, color: showAssumptions ? "#f5c842" : "#555", padding: "5px 12px", cursor: "pointer", fontSize: 11 }}>
+            ✎ Assumptions
+          </button>
+          <button onClick={() => selected && loadData(selected)} disabled={loading}
+            style={{ background: "#0a0a0a", border: "1px solid #1e1e1e", borderRadius: 6, color: "#555", padding: "5px 10px", cursor: "pointer", fontSize: 11 }}>
+            ↻
+          </button>
+        </div>
+      </div>
+
+      {/* ── User assumption overrides ── */}
+      {showAssumptions && data && (
+        <div style={{ background: "#070707", border: "1px solid #f5c84222", borderRadius: 10, padding: "14px 16px", marginBottom: 16 }}>
+          <div style={{ fontSize: 10, color: "#f5c842", fontWeight: 700, textTransform: "uppercase", letterSpacing: 1, marginBottom: 12 }}>
+            ✎ Override Assumptions — leave blank to use auto-detected values
+          </div>
+          <div style={{ display: "flex", gap: 16, flexWrap: "wrap", alignItems: "flex-end" }}>
+            <InputField
+              label={`Phase 1 Growth (auto: ${(data.g1Auto * 100).toFixed(1)}% · ${data.g1Source})`}
+              value={customG1} onChange={setCustomG1} placeholder={(data.g1Auto * 100).toFixed(1)}
+            />
+            <InputField
+              label={`Phase 2 Terminal Growth (auto: ${(data.g2Auto * 100).toFixed(1)}% · ${data.g2Source})`}
+              value={customG2} onChange={setCustomG2} placeholder={(data.g2Auto * 100).toFixed(1)}
+            />
+            <InputField
+              label={`Base PE Multiple (auto: ${data.peBase.toFixed(1)}× · hist median)`}
+              value={customPE} onChange={setCustomPE} placeholder={data.peBase.toFixed(1)} suffix="×"
+            />
+            <button onClick={() => { setCustomG1(""); setCustomG2(""); setCustomPE(""); }}
+              style={{ background: "transparent", border: "1px solid #2a2a2a", borderRadius: 6, color: "#444", padding: "5px 12px", cursor: "pointer", fontSize: 11, alignSelf: "flex-end" }}>
+              Reset
+            </button>
+          </div>
+          <div style={{ marginTop: 10, fontSize: 10, color: "#2a2a2a", lineHeight: 1.6 }}>
+            Phase 1 = years 1–{Math.min(growthYears, 3)} · Phase 2 = years {Math.min(growthYears, 3)+1}–{growthYears} (terminal normalisation)
+            {" "}· PE range from {data.histPEsCount} historical data points: {data.histPEMin.toFixed(0)}× – {data.histPEMax.toFixed(0)}×
+          </div>
+        </div>
+      )}
+
+      {loading && <div style={{ display: "flex", justifyContent: "center", padding: 60 }}><Spinner size={24}/></div>}
+      {data?.error && <div style={{ color: "#ff6b6b", fontFamily: "monospace", padding: 20 }}>Error: {data.error}</div>}
+
+      {data && !data.error && !loading && (
+        <>
+          {/* ── Summary cards ── */}
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(130px, 1fr))", gap: 10, marginBottom: 16 }}>
+            {[
+              ["Price",         `$${data.currentPrice?.toFixed(2)}`,    valZone?.color || "#888"],
+              ["Zone",          valZone?.label || "—",                   valZone?.color || "#888"],
+              ["Phase 1 Growth",`${(effectiveG1*100).toFixed(1)}%/yr`,  customG1 ? "#f5c842" : "#888"],
+              ["Phase 2 Growth",`${(effectiveG2*100).toFixed(1)}%/yr`,  customG2 ? "#f5c842" : "#555"],
+              ["Base PE",       `${effectivePEBase.toFixed(0)}×`,        customPE ? "#f5c842" : "#888"],
+              ["Fwd EPS",       data.forwardEps ? `$${data.forwardEps.toFixed(2)}` : "—", "#888"],
+              [upsideToBase != null ? `${growthYears}Y Upside (base)` : "Analyst Target",
+               upsideToBase != null ? `${upsideToBase >= 0 ? "+" : ""}${upsideToBase.toFixed(0)}%`
+                                    : (data.targetMean ? `$${data.targetMean.toFixed(0)}` : "—"),
+               upsideToBase > 20 ? "#00e5a0" : upsideToBase > 0 ? "#f5c842" : "#ff6b6b"],
+              ["Analysts",      data.numAnalysts ? `${data.numAnalysts} covering` : "—", "#555"],
+            ].map(([label, val, color]) => (
+              <div key={label} style={{ background: "#070707", border: "1px solid #141414", borderRadius: 10, padding: "12px 14px" }}>
+                <div style={{ fontSize: 9, color: "#333", textTransform: "uppercase", letterSpacing: 0.8, marginBottom: 6, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{label}</div>
+                <div style={{ fontFamily: "monospace", fontSize: 14, fontWeight: 700, color }}>{val}</div>
+              </div>
+            ))}
+          </div>
+
+          {/* ── Band legend ── */}
+          <div style={{ background: "#070707", border: "1px solid #141414", borderRadius: 10, padding: "10px 16px", marginBottom: 12, display: "flex", gap: 20, flexWrap: "wrap", alignItems: "center" }}>
+            {[
+              ["─ ─ Bull", `${effectivePEBull?.toFixed(0)}×`, "#f5c842", `hist 90th pct PE — stock at peak optimism`],
+              ["─── Base", `${effectivePEBase?.toFixed(0)}×`, "#888",    `hist median PE — neutral fair value`],
+              ["─ ─ Bear", `${effectivePEBear?.toFixed(0)}×`, "#00e5a0", `hist 10th pct PE — stock at max pessimism`],
+              ["──── Price", "",                               "#e0e0e0", "actual closing price"],
+            ].map(([label, pe, color, desc]) => (
+              <div key={label} style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <span style={{ fontSize: 11, color, fontFamily: "monospace", fontWeight: 700 }}>{label}</span>
+                {pe && <span style={{ fontSize: 11, color: "#444" }}>{pe}</span>}
+                <span style={{ fontSize: 10, color: "#2a2a2a" }}>— {desc}</span>
+              </div>
+            ))}
+            {(customG1 || customG2 || customPE) && (
+              <span style={{ marginLeft: "auto", fontSize: 10, color: "#f5c842" }}>⚠ Custom assumptions active</span>
+            )}
+          </div>
+
+          {/* ── Chart ── */}
+          <div style={{ background: "#070707", border: "1px solid #141414", borderRadius: 12, padding: "16px 10px 10px" }}>
+            <div style={{ paddingLeft: 10, marginBottom: 3 }}>
+              <span style={{ fontSize: 11, color: "#333", textTransform: "uppercase", letterSpacing: 1 }}>
+                {selected} · {growthYears}Y Fair Value · Phase 1: {(effectiveG1*100).toFixed(1)}%/yr → Phase 2: {(effectiveG2*100).toFixed(1)}%/yr
+              </span>
+            </div>
+            <div style={{ fontSize: 10, color: "#2a2a2a", paddingLeft: 10, marginBottom: 10 }}>
+              ← {data.priceHistory.length}d price history · today · {growthYears}Y projection →
+            </div>
+            <ResponsiveContainer width="100%" height={400}>
+              <ComposedChart data={chartData} margin={{ top: 10, right: 30, left: 10, bottom: 10 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#0e0e0e"/>
+                <XAxis dataKey="date" tick={{ fill: "#2a2a2a", fontSize: 10 }} tickLine={false} interval={Math.floor(chartData.length / 10)}/>
+                <YAxis tick={{ fill: "#2a2a2a", fontSize: 10 }} tickLine={false} tickFormatter={v => `$${v.toFixed(0)}`} domain={["auto", "auto"]} width={50}/>
+                <Tooltip content={<CustomTooltip/>}/>
+
+                {/* Shaded band area */}
+                <Area type="monotone" dataKey="bull" stroke="#f5c842" strokeWidth={1}
+                  strokeDasharray="5 4" fill="#f5c84206" dot={false} connectNulls activeDot={false}/>
+                <Area type="monotone" dataKey="bear" stroke="#00e5a0" strokeWidth={1}
+                  strokeDasharray="5 4" fill="#00e5a006" dot={false} connectNulls activeDot={false}/>
+                <Area type="monotone" dataKey="base" stroke="#555555" strokeWidth={1.5}
+                  strokeDasharray="8 4" fill="none" dot={false} connectNulls activeDot={false}/>
+
+                {/* Actual price — most prominent */}
+                <Line type="monotone" dataKey="price" stroke="#e0e0e0" strokeWidth={2.5}
+                  dot={false} connectNulls activeDot={{ r: 3, fill: "#e0e0e0" }}/>
+
+                {/* Analyst targets */}
+                {data.targetHigh && <ReferenceLine y={data.targetHigh} stroke="#f5c84233"
+                  strokeDasharray="3 5" label={{ value: `↑ $${data.targetHigh.toFixed(0)}`, fill: "#f5c84255", fontSize: 9, position: "right" }}/>}
+                {data.targetMean && <ReferenceLine y={data.targetMean} stroke="#88888855"
+                  strokeDasharray="3 5" label={{ value: `⬤ $${data.targetMean.toFixed(0)}`, fill: "#888", fontSize: 9, position: "right" }}/>}
+                {data.targetLow  && <ReferenceLine y={data.targetLow}  stroke="#00e5a033"
+                  strokeDasharray="3 5" label={{ value: `↓ $${data.targetLow.toFixed(0)}`,  fill: "#00e5a055", fontSize: 9, position: "right" }}/>}
+
+                {/* Today line */}
+                <ReferenceLine x={new Date().toISOString().slice(5,10)}
+                  stroke="#2a2a2a" strokeWidth={1.5}
+                  label={{ value: "today", fill: "#2a2a2a", fontSize: 9, position: "insideTopLeft" }}/>
+
+                {/* Phase boundary */}
+                {growthYears > 3 && (() => {
+                  const phase2Date = new Date();
+                  phase2Date.setFullYear(phase2Date.getFullYear() + 3);
+                  return <ReferenceLine x={phase2Date.toISOString().slice(5,10)}
+                    stroke="#1a1a1a" strokeDasharray="2 4"
+                    label={{ value: "phase 2", fill: "#1a1a1a", fontSize: 8, position: "insideTopLeft" }}/>;
+                })()}
+              </ComposedChart>
+            </ResponsiveContainer>
+          </div>
+
+          {/* ── Context box ── */}
+          <div style={{ marginTop: 10, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            {/* Zone interpretation */}
+            <div style={{ background: "#070707", border: `1px solid ${valZone?.color || "#141414"}22`, borderRadius: 10, padding: "12px 16px" }}>
+              <div style={{ fontSize: 10, color: valZone?.color || "#555", fontWeight: 700, marginBottom: 6, textTransform: "uppercase", letterSpacing: 1 }}>
+                {valZone?.label}
+              </div>
+              <div style={{ fontSize: 11, color: "#444", lineHeight: 1.7 }}>{valZone?.desc}</div>
+              {upsideToBase != null && (
+                <div style={{ marginTop: 8, fontFamily: "monospace", fontSize: 13, fontWeight: 700, color: upsideToBase > 0 ? "#00e5a0" : "#ff6b6b" }}>
+                  {upsideToBase >= 0 ? "+" : ""}{upsideToBase.toFixed(0)}% to base in {growthYears}Y
+                  {data.targetMean && <span style={{ fontSize: 10, color: "#444", fontWeight: 400, marginLeft: 8 }}>
+                    vs analyst {((data.targetMean - data.currentPrice) / data.currentPrice * 100).toFixed(0)}%
+                  </span>}
+                </div>
+              )}
+            </div>
+
+            {/* Growth & PE assumptions */}
+            <div style={{ background: "#070707", border: "1px solid #141414", borderRadius: 10, padding: "12px 16px" }}>
+              <div style={{ fontSize: 10, color: "#333", fontWeight: 700, marginBottom: 8, textTransform: "uppercase", letterSpacing: 1 }}>Growth inputs</div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+                {[
+                  ["Phase 1", `${(effectiveG1*100).toFixed(1)}%/yr`, data.g1Source, customG1 ? "#f5c842" : "#888"],
+                  ["Phase 2", `${(effectiveG2*100).toFixed(1)}%/yr`, data.g2Source, customG2 ? "#f5c842" : "#555"],
+                  ["Base EPS", data.baseEps ? `$${data.baseEps.toFixed(2)}` : "—", data.forwardEps ? "forward" : "trailing", "#888"],
+                  ["PE range", `${data.histPEMin.toFixed(0)}×–${data.histPEMax.toFixed(0)}×`, `from ${data.histPEsCount} data pts`, "#555"],
+                ].map(([label, val, source, color]) => (
+                  <div key={label} style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+                    <span style={{ fontSize: 10, color: "#333" }}>{label}</span>
+                    <span style={{ fontFamily: "monospace", fontSize: 12, fontWeight: 700, color }}>{val}</span>
+                    <span style={{ fontSize: 9, color: "#2a2a2a" }}>{source}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+}
 function MarktTab() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -1701,10 +2191,11 @@ export default function App() {
   };
 
   const TABS = [
-    { id: "markt", label: "Market", icon: "chart" },
+    { id: "markt",     label: "Market",    icon: "chart" },
     { id: "shortlist", label: `Shortlist${shortlist.length ? ` (${shortlist.length})` : ""}`, icon: "star" },
     { id: "portfolio", label: "Portfolio", icon: "briefcase" },
-    { id: "peg", label: "PEG Chart", icon: "chart" },
+    { id: "valuation", label: "Valuation", icon: "chart" },
+    { id: "peg",       label: "PEG Chart", icon: "chart" },
   ];
 
   return (
@@ -1750,12 +2241,14 @@ export default function App() {
                 {tab === "markt" && "Market Dashboard"}
                 {tab === "shortlist" && "Entry Timing Dashboard"}
                 {tab === "portfolio" && "Portfolio"}
+                {tab === "valuation" && "Valuation"}
                 {tab === "peg" && "PEG History"}
               </h1>
               <p style={{ color: "#2a2a2a", fontSize: 12, marginTop: 3 }}>
                 {tab === "markt" && "Rational macro context · VIX · Fear & Greed · Yields · Sentiment"}
                 {tab === "shortlist" && "52-week position · analyst targets · entry signal per stock"}
                 {tab === "portfolio" && "Live P&L · positions synced with Supabase"}
+                {tab === "valuation" && "Fair value bands · price vs projected EPS × PE multiple"}
                 {tab === "peg" && "PEG trend · grows with every scan"}
               </p>
             </div>
@@ -1767,6 +2260,9 @@ export default function App() {
             </div>
             <div style={{ display: tab === "portfolio" ? "block" : "none" }}>
               <PortfolioTab positions={positions} setPositions={setPositions}/>
+            </div>
+            <div style={{ display: tab === "valuation" ? "block" : "none" }}>
+              <ValuationTab positions={positions} shortlist={shortlist}/>
             </div>
             <div style={{ display: tab === "peg" ? "block" : "none" }}>
               <PEGChartTab portfolioSymbols={positions.map(p => p.symbol)}/>
