@@ -1434,6 +1434,23 @@ Return ONLY valid JSON:
 }
 
 // ── Valuation Tab ─────────────────────────────────────────────────────────────
+// ── Valuation helpers ────────────────────────────────────────────────────────
+function ValInputField({ label, value, onChange, placeholder, suffix = "%" }) {
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+      <span style={{ fontSize: 9, color: "#555", textTransform: "uppercase", letterSpacing: 0.8 }}>{label}</span>
+      <div style={{ display: "flex", alignItems: "center", gap: 4, background: "#0d0d0d", border: "1px solid #222", borderRadius: 6, padding: "5px 10px" }}>
+        <input
+          type="number" value={value} onChange={e => onChange(e.target.value)}
+          placeholder={placeholder}
+          style={{ width: 60, background: "transparent", border: "none", color: "#f5c842", fontFamily: "monospace", fontSize: 13, outline: "none" }}
+        />
+        <span style={{ color: "#333", fontSize: 11 }}>{suffix}</span>
+      </div>
+    </div>
+  );
+}
+
 // ── Valuation Tab (v2) ────────────────────────────────────────────────────────
 // Two-stage growth model + historical PE range bands + user-editable assumptions
 function ValuationTab({ positions, shortlist }) {
@@ -1465,7 +1482,7 @@ function ValuationTab({ positions, shortlist }) {
     setData(null);
     try {
       const [priceHistory, fhRaw, yahooRaw] = await Promise.all([
-        fetchHistoricalPrices(symbol, 730),
+        fetchHistoricalPrices(symbol, 365),
         fetchFinnhub(symbol),
         fetch(`/api/yahoo?symbol=${symbol}&endpoint=quoteSummary&modules=defaultKeyStatistics,summaryDetail,financialData`)
           .then(r => r.json()),
@@ -1498,7 +1515,7 @@ function ValuationTab({ positions, shortlist }) {
       // Cyclicals (semis, energy, materials) have boom/bust EPS cycles.
       // 1Y forward growth of 300%+ is a cyclical recovery, not sustainable.
       // We cap phase 1 at 60% and flag it so the user knows.
-      const G1_CAP = 0.60; // 60% max phase 1 — anything above is flagged
+      const G1_CAP = 0.40; // 40% max phase 1 — anything above is flagged as likely transient
       const rawG1 = fwdGrowth1Y ?? epsGrowth3Y ?? epsGrowth5Y ?? revGrowth3Y ?? 0.10;
       const g1Auto = Math.min(rawG1, G1_CAP);
       const g1Capped = rawG1 > G1_CAP; // flag for UI warning
@@ -1710,20 +1727,6 @@ function ValuationTab({ positions, shortlist }) {
     );
   };
 
-  const InputField = ({ label, value, onChange, placeholder, suffix = "%" }) => (
-    <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-      <span style={{ fontSize: 9, color: "#333", textTransform: "uppercase", letterSpacing: 1 }}>{label}</span>
-      <div style={{ display: "flex", alignItems: "center", gap: 4, background: "#0d0d0d", border: "1px solid #222", borderRadius: 6, padding: "4px 8px" }}>
-        <input
-          type="number" value={value} onChange={e => onChange(e.target.value)}
-          placeholder={placeholder}
-          style={{ width: 52, background: "transparent", border: "none", color: "#f5c842", fontFamily: "monospace", fontSize: 12, outline: "none" }}
-        />
-        <span style={{ color: "#333", fontSize: 11 }}>{suffix}</span>
-      </div>
-    </div>
-  );
-
   return (
     <div>
       {/* ── Symbol selector + controls ── */}
@@ -1765,15 +1768,15 @@ function ValuationTab({ positions, shortlist }) {
             ✎ Override Assumptions — leave blank to use auto-detected values
           </div>
           <div style={{ display: "flex", gap: 16, flexWrap: "wrap", alignItems: "flex-end" }}>
-            <InputField
+            <ValInputField
               label={`Phase 1 Growth (auto: ${(data.g1Auto * 100).toFixed(1)}% · ${data.g1Source})`}
               value={customG1} onChange={setCustomG1} placeholder={(data.g1Auto * 100).toFixed(1)}
             />
-            <InputField
+            <ValInputField
               label={`Phase 2 Terminal Growth (auto: ${(data.g2Auto * 100).toFixed(1)}% · ${data.g2Source})`}
               value={customG2} onChange={setCustomG2} placeholder={(data.g2Auto * 100).toFixed(1)}
             />
-            <InputField
+            <ValInputField
               label={`Base PE Multiple (auto: ${data.peBase.toFixed(1)}× · hist median)`}
               value={customPE} onChange={setCustomPE} placeholder={data.peBase.toFixed(1)} suffix="×"
             />
@@ -1837,13 +1840,16 @@ function ValuationTab({ positions, shortlist }) {
 
           {/* ── Chart ── */}
           <div style={{ background: "#070707", border: "1px solid #141414", borderRadius: 12, padding: "16px 10px 10px" }}>
-            <div style={{ paddingLeft: 10, marginBottom: 3 }}>
+            <div style={{ paddingLeft: 10, marginBottom: 3, display: "flex", justifyContent: "space-between", alignItems: "center", paddingRight: 10 }}>
               <span style={{ fontSize: 11, color: "#333", textTransform: "uppercase", letterSpacing: 1 }}>
                 {selected} · {growthYears}Y Fair Value · Phase 1: {(effectiveG1*100).toFixed(1)}%/yr → Phase 2: {(effectiveG2*100).toFixed(1)}%/yr
               </span>
+              {lastBand?.bull > (cp * 2.5) && (
+                <span style={{ fontSize: 9, color: "#2a2a2a" }}>bands clipped at 2.5× price for readability</span>
+              )}
             </div>
             <div style={{ fontSize: 10, color: "#2a2a2a", paddingLeft: 10, marginBottom: data.g1Capped && !customG1 ? 6 : 10 }}>
-              ← {data.priceHistory.length}d price history · today · {growthYears}Y projection →
+              ← ~1Y price history · today · {growthYears}Y projection →
             </div>
             {data.g1Capped && !customG1 && (
               <div style={{ margin: "0 10px 10px", background: "#f5c84211", border: "1px solid #f5c84233", borderRadius: 6, padding: "6px 12px", fontSize: 10, color: "#f5c842" }}>
@@ -1855,7 +1861,18 @@ function ValuationTab({ positions, shortlist }) {
               <ComposedChart data={chartData} margin={{ top: 10, right: 30, left: 10, bottom: 10 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#0e0e0e"/>
                 <XAxis dataKey="date" tick={{ fill: "#2a2a2a", fontSize: 10 }} tickLine={false} interval={Math.floor(chartData.length / 7)} minTickGap={40}/>
-                <YAxis tick={{ fill: "#2a2a2a", fontSize: 10 }} tickLine={false} tickFormatter={v => v >= 1000 ? `$${(v/1000).toFixed(1)}k` : `$${v.toFixed(0)}`} domain={[dataMin => Math.max(0, dataMin * 0.7), dataMax => dataMax * 1.1]} width={55}/>
+                <YAxis tick={{ fill: "#2a2a2a", fontSize: 10 }} tickLine={false}
+                  tickFormatter={v => v >= 1000 ? `$${(v/1000).toFixed(1)}k` : `$${v.toFixed(0)}`}
+                  domain={[
+                    dataMin => Math.max(0, Math.floor(dataMin * 0.85)),
+                    () => {
+                      // Cap Y at 2.5× current price — keeps bands visible but not absurd
+                      const cap = cp ? cp * 2.5 : undefined;
+                      const bandMax = todayBands?.bull ? todayBands.bull * 1.8 : undefined;
+                      return cap && bandMax ? Math.min(cap, bandMax) : (cap || bandMax || "auto");
+                    }
+                  ]}
+                  width={55}/>
                 <Tooltip content={<CustomTooltip/>}/>
 
                 {/* Shaded band area */}
