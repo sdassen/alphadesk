@@ -1465,7 +1465,7 @@ function ValuationTab({ positions, shortlist }) {
     setData(null);
     try {
       const [priceHistory, fhRaw, yahooRaw] = await Promise.all([
-        fetchHistoricalPrices(symbol, 730), // 2 years of history
+        fetchHistoricalPrices(symbol, 730),
         fetchFinnhub(symbol),
         fetch(`/api/yahoo?symbol=${symbol}&endpoint=quoteSummary&modules=defaultKeyStatistics,summaryDetail,financialData`)
           .then(r => r.json()),
@@ -1488,87 +1488,95 @@ function ValuationTab({ positions, shortlist }) {
       const numAnalysts  = fd.numberOfAnalystOpinions?.raw || null;
 
       // ── Growth rates ─────────────────────────────────────────────────────────
-      // Phase 1: near-term (1-3 yr) — analyst forward EPS preferred (most forward-looking)
-      const fwdGrowth1Y  = trailingEps && forwardEps && trailingEps > 0
+      const fwdGrowth1Y = trailingEps && forwardEps && trailingEps > 0
         ? (forwardEps - trailingEps) / Math.abs(trailingEps) : null;
-      // Yahoo long-term growth estimate (analyst consensus 5Y)
-      const ltGrowthYahoo = ks.pegRatio?.raw && forwardPE
-        ? null : null; // placeholder — we use Finnhub instead
-      const epsGrowth3Y   = fh?.epsGrowth3Y ? fh.epsGrowth3Y / 100 : null;
-      const epsGrowth5Y   = fh?.epsGrowth5Y ? fh.epsGrowth5Y / 100 : null;
-      const revGrowth3Y   = fh?.revenueGrowth3Y ? fh.revenueGrowth3Y / 100 : null;
+      const epsGrowth3Y = fh?.epsGrowth3Y ? fh.epsGrowth3Y / 100 : null;
+      const epsGrowth5Y = fh?.epsGrowth5Y ? fh.epsGrowth5Y / 100 : null;
+      const revGrowth3Y = fh?.revenueGrowth3Y ? fh.revenueGrowth3Y / 100 : null;
 
-      // Phase 1 = forward-looking: analyst 1Y fwd > Finnhub 3Y historic
-      const g1Auto = fwdGrowth1Y ?? epsGrowth3Y ?? epsGrowth5Y ?? revGrowth3Y ?? 0.10;
-      // Phase 2 = terminal / normalised: always more conservative
-      // Use Finnhub 5Y or half of phase1, min 5% max 15%
+      // ── CYCLICAL GUARD: cap extreme EPS swings ────────────────────────────
+      // Cyclicals (semis, energy, materials) have boom/bust EPS cycles.
+      // 1Y forward growth of 300%+ is a cyclical recovery, not sustainable.
+      // We cap phase 1 at 60% and flag it so the user knows.
+      const G1_CAP = 0.60; // 60% max phase 1 — anything above is flagged
+      const rawG1 = fwdGrowth1Y ?? epsGrowth3Y ?? epsGrowth5Y ?? revGrowth3Y ?? 0.10;
+      const g1Auto = Math.min(rawG1, G1_CAP);
+      const g1Capped = rawG1 > G1_CAP; // flag for UI warning
+
+      // Phase 2 = normalised long-term: max 15%, min 5%
+      // Prefer Finnhub 5Y (includes downturns), else half of 3Y, else 8%
       const g2Auto = Math.min(0.15, Math.max(0.05,
         epsGrowth5Y ?? (epsGrowth3Y ? epsGrowth3Y * 0.6 : 0.08)
       ));
 
-      const g1 = g1Auto; // will be overridden by customG1 in render
-      const g2 = g2Auto;
-
-      // Growth source labels
-      const g1Source = fwdGrowth1Y  ? "analyst fwd 1Y"
+      const g1Source = fwdGrowth1Y  ? (g1Capped ? `analyst fwd 1Y (capped from ${(rawG1*100).toFixed(0)}%)` : "analyst fwd 1Y")
                      : epsGrowth3Y  ? "Finnhub 3Y CAGR"
                      : epsGrowth5Y  ? "Finnhub 5Y CAGR"
-                     : revGrowth3Y  ? "rev 3Y CAGR~"
+                     : revGrowth3Y  ? "rev 3Y~"
                      : "est 10%";
       const g2Source = epsGrowth5Y  ? "Finnhub 5Y"
                      : epsGrowth3Y  ? "60% of 3Y"
                      : "est 8%";
 
-      // ── Historical PE range (for realistic band bounds) ────────────────────
-      // Use price history + trailing EPS to reconstruct historical PE
-      const histPEs = priceHistory
-        .filter(p => p.close && trailingEps && trailingEps > 0)
-        .map(p => p.close / trailingEps)
-        .filter(pe => pe > 0 && pe < 200);
+      // ── Historical PE range ───────────────────────────────────────────────
+      // For cyclicals: use forward PE as the reference (more stable than trailing)
+      // Only use trailing PE history when trailing EPS is positive and reasonable
+      const useForwardPEBasis = !trailingPE || trailingPE <= 0 || trailingPE > 150
+        || (forwardPE && trailingPE > forwardPE * 3);
 
-      // Historical PE range — p25 to p75 for realistic band
-      histPEs.sort((a, b) => a - b);
-      const histPEMin = histPEs.length > 4
-        ? histPEs[Math.floor(histPEs.length * 0.10)] : (forwardPE ? forwardPE * 0.7 : 12);
-      const histPEMax = histPEs.length > 4
-        ? histPEs[Math.floor(histPEs.length * 0.90)] : (forwardPE ? forwardPE * 1.3 : 35);
-      const histPEMed = histPEs.length > 4
-        ? histPEs[Math.floor(histPEs.length * 0.50)] : (trailingPE || forwardPE || 20);
+      let peBear, peBase, peBull, histPEsCount = 0;
 
-      // Band PE multiples
-      // Bear = historical 10th percentile (stock at its cheapest historically)
-      // Base = historical median (neutral)
-      // Bull = historical 90th percentile (stock at its most expensive historically)
-      const peBear = histPEMin;
-      const peBase = histPEMed;
-      const peBull = histPEMax;
+      if (useForwardPEBasis || !trailingEps || trailingEps <= 0) {
+        // Forward PE basis — for cyclicals and loss-making companies
+        // Bear = forward PE × 0.65, Base = forward PE, Bull = forward PE × 1.5
+        const fpe = forwardPE || 15;
+        peBear = fpe * 0.65;
+        peBase = fpe;
+        peBull = fpe * 1.5;
+      } else {
+        // Reconstruct historical PE from price history + trailing EPS
+        const histPEs = priceHistory
+          .filter(p => p.close && trailingEps > 0)
+          .map(p => p.close / trailingEps)
+          .filter(pe => pe > 0 && pe < 200);
+        histPEs.sort((a, b) => a - b);
+        histPEsCount = histPEs.length;
 
-      // Starting EPS for projection
-      const baseEps = forwardEps || trailingEps
+        if (histPEs.length > 8) {
+          peBear = histPEs[Math.floor(histPEs.length * 0.15)];
+          peBase = histPEs[Math.floor(histPEs.length * 0.50)];
+          peBull = histPEs[Math.floor(histPEs.length * 0.85)];
+        } else {
+          // Fallback to forward PE based approach
+          const fpe = forwardPE || trailingPE || 15;
+          peBear = fpe * 0.65;
+          peBase = fpe;
+          peBull = fpe * 1.5;
+        }
+      }
+
+      // Starting EPS — always prefer forward EPS for projection
+      const baseEps = forwardEps || (trailingEps && trailingEps > 0 ? trailingEps : null)
         || (currentPrice && forwardPE ? currentPrice / forwardPE : null);
 
-      // ── Build fair value bands (two-stage) ─────────────────────────────────
+      // ── Build bands ───────────────────────────────────────────────────────
       const bands = [];
       const today = new Date();
-      const phase1Years = Math.min(growthYears, 3); // phase 1 = first 3 years max
+      const phase1Years = Math.min(growthYears, 3);
 
       for (let m = 0; m <= growthYears * 12; m++) {
         const date = new Date(today);
         date.setMonth(date.getMonth() + m);
         const years = m / 12;
-
-        // Two-stage EPS projection
         let projectedEps = baseEps;
         if (projectedEps) {
           if (years <= phase1Years) {
-            projectedEps = baseEps * Math.pow(1 + g1, years);
+            projectedEps = baseEps * Math.pow(1 + g1Auto, years);
           } else {
-            // Phase 1 end value × phase 2 growth for remaining years
-            const p1Eps = baseEps * Math.pow(1 + g1, phase1Years);
-            projectedEps = p1Eps * Math.pow(1 + g2, years - phase1Years);
+            const p1Eps = baseEps * Math.pow(1 + g1Auto, phase1Years);
+            projectedEps = p1Eps * Math.pow(1 + g2Auto, years - phase1Years);
           }
         }
-
         bands.push({
           date: date.toISOString().split("T")[0],
           bull: projectedEps ? projectedEps * peBull : null,
@@ -1583,10 +1591,9 @@ function ValuationTab({ positions, shortlist }) {
       setData({
         symbol, currentPrice,
         trailingEps, forwardEps, baseEps,
-        g1Auto, g2Auto, g1Source, g2Source,
+        g1Auto, g2Auto, g1Source, g2Source, g1Capped, rawG1,
         peBear, peBase, peBull,
-        histPEMin, histPEMax, histPEMed,
-        histPEsCount: histPEs.length,
+        useForwardPEBasis, histPEsCount,
         targetMean, targetHigh, targetLow, numAnalysts,
         priceHistory, bands, histMap, fh,
         fwdGrowth1Y, epsGrowth3Y, epsGrowth5Y, revGrowth3Y,
@@ -1649,8 +1656,11 @@ function ValuationTab({ positions, shortlist }) {
     return [...allDates].sort().map(date => {
       const band  = bandMap[date];
       const price = data.histMap[date];
+      // Format: "Apr '25" — readable with year context
+      const d = new Date(date);
+      const fmtDate = d.toLocaleDateString('en-GB', { month: 'short', year: '2-digit' }).replace(' ', "' ");
       return {
-        date: date.slice(5),
+        date: fmtDate,
         fullDate: date,
         price: price != null ? parseFloat(price.toFixed(2)) : undefined,
         bull:  band?.bull  != null ? parseFloat(band.bull.toFixed(2))  : undefined,
@@ -1789,7 +1799,7 @@ function ValuationTab({ positions, shortlist }) {
             {[
               ["Price",         `$${data.currentPrice?.toFixed(2)}`,    valZone?.color || "#888"],
               ["Zone",          valZone?.label || "—",                   valZone?.color || "#888"],
-              ["Phase 1 Growth",`${(effectiveG1*100).toFixed(1)}%/yr`,  customG1 ? "#f5c842" : "#888"],
+              ["Phase 1 Growth",`${(effectiveG1*100).toFixed(1)}%/yr${data.g1Capped && !customG1 ? " ⚠" : ""}`, customG1 ? "#f5c842" : data.g1Capped ? "#f5c842" : "#888"],
               ["Phase 2 Growth",`${(effectiveG2*100).toFixed(1)}%/yr`,  customG2 ? "#f5c842" : "#555"],
               ["Base PE",       `${effectivePEBase.toFixed(0)}×`,        customPE ? "#f5c842" : "#888"],
               ["Fwd EPS",       data.forwardEps ? `$${data.forwardEps.toFixed(2)}` : "—", "#888"],
@@ -1832,14 +1842,20 @@ function ValuationTab({ positions, shortlist }) {
                 {selected} · {growthYears}Y Fair Value · Phase 1: {(effectiveG1*100).toFixed(1)}%/yr → Phase 2: {(effectiveG2*100).toFixed(1)}%/yr
               </span>
             </div>
-            <div style={{ fontSize: 10, color: "#2a2a2a", paddingLeft: 10, marginBottom: 10 }}>
+            <div style={{ fontSize: 10, color: "#2a2a2a", paddingLeft: 10, marginBottom: data.g1Capped && !customG1 ? 6 : 10 }}>
               ← {data.priceHistory.length}d price history · today · {growthYears}Y projection →
             </div>
+            {data.g1Capped && !customG1 && (
+              <div style={{ margin: "0 10px 10px", background: "#f5c84211", border: "1px solid #f5c84233", borderRadius: 6, padding: "6px 12px", fontSize: 10, color: "#f5c842" }}>
+                ⚠ Phase 1 growth capped at 60% (raw: {(data.rawG1*100).toFixed(0)}%) — cyclical EPS recovery.
+                Use Assumptions to set your own estimate.
+              </div>
+            )}
             <ResponsiveContainer width="100%" height={400}>
               <ComposedChart data={chartData} margin={{ top: 10, right: 30, left: 10, bottom: 10 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#0e0e0e"/>
-                <XAxis dataKey="date" tick={{ fill: "#2a2a2a", fontSize: 10 }} tickLine={false} interval={Math.floor(chartData.length / 10)}/>
-                <YAxis tick={{ fill: "#2a2a2a", fontSize: 10 }} tickLine={false} tickFormatter={v => `$${v.toFixed(0)}`} domain={["auto", "auto"]} width={50}/>
+                <XAxis dataKey="date" tick={{ fill: "#2a2a2a", fontSize: 10 }} tickLine={false} interval={Math.floor(chartData.length / 7)} minTickGap={40}/>
+                <YAxis tick={{ fill: "#2a2a2a", fontSize: 10 }} tickLine={false} tickFormatter={v => v >= 1000 ? `$${(v/1000).toFixed(1)}k` : `$${v.toFixed(0)}`} domain={[dataMin => Math.max(0, dataMin * 0.7), dataMax => dataMax * 1.1]} width={55}/>
                 <Tooltip content={<CustomTooltip/>}/>
 
                 {/* Shaded band area */}
@@ -1905,7 +1921,7 @@ function ValuationTab({ positions, shortlist }) {
                   ["Phase 1", `${(effectiveG1*100).toFixed(1)}%/yr`, data.g1Source, customG1 ? "#f5c842" : "#888"],
                   ["Phase 2", `${(effectiveG2*100).toFixed(1)}%/yr`, data.g2Source, customG2 ? "#f5c842" : "#555"],
                   ["Base EPS", data.baseEps ? `$${data.baseEps.toFixed(2)}` : "—", data.forwardEps ? "forward" : "trailing", "#888"],
-                  ["PE range", `${data.histPEMin.toFixed(0)}×–${data.histPEMax.toFixed(0)}×`, `from ${data.histPEsCount} data pts`, "#555"],
+                  ["PE basis", data.useForwardPEBasis ? `fwd ${data.peBase.toFixed(0)}× (±range)` : `${data.peBear.toFixed(0)}–${data.peBull.toFixed(0)}×`, data.useForwardPEBasis ? "fwd PE (cyclical)" : `${data.histPEsCount} hist pts`, "#555"],
                 ].map(([label, val, source, color]) => (
                   <div key={label} style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
                     <span style={{ fontSize: 10, color: "#333" }}>{label}</span>
