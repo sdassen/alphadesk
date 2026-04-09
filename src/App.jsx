@@ -1596,43 +1596,46 @@ function ValuationTab({ positions, shortlist }) {
                      : epsGrowth5Y ? "Finnhub 5Y"
                      : "est";
 
-      // ── EPS + PE: must be consistent pair ────────────────────────────────────
-      // eps_basis from config determines starting EPS AND which PE is the anchor.
-      // 'forward': start at forwardEps, anchor on forwardPE → band t=0 ≈ current price
-      // 'trailing': start at trailingEps, anchor on trailingPE → good for banks/mature
+      // ── EPS + PE: config-driven consistent pair ─────────────────────────────
+      // eps_basis='forward': forwardEps × absolute PE targets from config
+      // eps_basis='trailing': trailingEps × absolute PE targets from config
       //
-      // Sanity check: base band at t=0 should be within 30% of current price.
-      // If not, we auto-switch to the other basis.
+      // pe_base_abs is the NORMALIZED fair-value PE for this stock type —
+      // NOT the current market PE. This means band t=0 shows if stock is
+      // cheap (below base band) or expensive (above base band) vs history.
+      //
+      // MU example: trailing EPS $21.19, peBase=12 → $254 at t=0
+      //   stock at $407 → ABOVE base → expensive vs normalized PE ✓
+      //   (correct: MU trades at 19x trailing = above normalized 12x mid-cycle)
+      //
+      // META example: forward EPS $35.97, peBase=22 → $791 at t=0
+      //   stock at $612 → BELOW base → BUY ZONE ✓
+      //   (correct: META trades at fwd PE 17x vs historical fair 22x)
 
       const epsBasis = cfg.eps_basis || 'forward';
-      let baseEps, anchorPE, useForwardPEBasis, histPEsCount = 0;
+      let baseEps, anchorPE, useForwardPEBasis = true, histPEsCount = 0;
 
-      if (epsBasis === 'trailing' && trailingEps && trailingEps > 0
-          && trailingPE && trailingPE > 0 && trailingPE < 80) {
-        baseEps   = trailingEps;
-        anchorPE  = trailingPE;
+      if (epsBasis === 'trailing') {
+        // Use trailing EPS — good for cyclicals at peak (MU), banks (BAC)
+        // where forward EPS is distorted by cycle position
+        baseEps  = (trailingEps && trailingEps > 0) ? trailingEps
+                 : (currentPrice && trailingPE ? currentPrice / trailingPE : null);
+        anchorPE = trailingPE || forwardPE || 15;
         useForwardPEBasis = false;
       } else {
-        // Forward basis (default for most stocks)
-        // Use forward EPS if available, else derive from price/PE
-        baseEps = forwardEps
-          || (currentPrice && forwardPE ? currentPrice / forwardPE : null)
-          || (trailingEps && trailingEps > 0 ? trailingEps : null);
+        // Forward basis — most stocks: platform, growth, equipment
+        // forwardEps reflects where the company is going, not where it has been
+        baseEps  = forwardEps
+                || (currentPrice && forwardPE ? currentPrice / forwardPE : null)
+                || (trailingEps && trailingEps > 0 ? trailingEps : null);
         anchorPE = forwardPE || trailingPE || 20;
-        useForwardPEBasis = true;
       }
 
-      // ── PE bands ─────────────────────────────────────────────────────────────
-      // Use absolute PE values from config (pe_bear_abs / pe_base_abs / pe_bull_abs).
-      // These represent the historical fair-value range for this stock type,
-      // NOT relative to the current PE — so the band tells you if the stock is
-      // cheap or expensive vs its own historical norm, not vs today's price.
-      //
-      // Example META: bear=14x, base=22x, bull=32x.
-      // If current fwd PE = 17x and base = 22x, band t=0 is ABOVE current price → BUY ZONE.
-      const peBear = cfg.pe_bear_abs || anchorPE * (cfg.pe_bear_mult || 0.70);
-      const peBase = cfg.pe_base_abs || anchorPE * (cfg.pe_base_mult || 1.00);
-      const peBull = cfg.pe_bull_abs || anchorPE * (cfg.pe_bull_mult || 1.40);
+      // PE bands from config — absolute values, not multipliers of current PE
+      // This is the key: pe_base_abs encodes what "fair" historically means for this stock
+      const peBear = cfg.pe_bear_abs || anchorPE * 0.65;
+      const peBase = cfg.pe_base_abs || anchorPE;
+      const peBull = cfg.pe_bull_abs || anchorPE * 1.40;
 
       // ── Build bands ───────────────────────────────────────────────────────
       const bands = [];
