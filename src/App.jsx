@@ -1805,7 +1805,7 @@ function ValuationTab({ positions, shortlist }) {
             ...shortlist.map(s => s.symbol),
           ])].sort().map(sym => (
             <button key={sym} onClick={() => { setSelected(sym); setCustomG1(""); setCustomG2(""); setCustomPE(""); setShowAssumptions(false); }}
-              style={{ background: selected === sym ? "#00e5a022" : "#0a0a0a", border: `1px solid ${selected === sym ? "#00e5a066" : "#1e1e1e"}`, borderRadius: 7, color: selected === sym ? "#00e5a0" : "#555", padding: "6px 12px", cursor: "pointer", fontFamily: "monospace", fontSize: 12, fontWeight: selected === sym ? 700 : 400 }}>
+              style={{ background: selected === sym ? "#00e5a022" : "#0a0a0a", border: `1px solid ${selected === sym ? "#00e5a066" : "#1e1e1e"}`, borderRadius: 7, color: selected === sym ? "#00e5a0" : "#555", padding: "7px 12px", cursor: "pointer", fontFamily: "monospace", fontSize: 13, fontWeight: selected === sym ? 700 : 400 }}>
               {sym}
             </button>
           ))}
@@ -2497,20 +2497,20 @@ function MarktTab() {
     <div>
       {/* Overall signal */}
       {overall && (
-        <div style={{ background: overall[1] + "11", border: `1px solid ${overall[1]}33`, borderRadius: 14, padding: "20px 24px", marginBottom: 24, display: "flex", alignItems: "center", gap: 16 }}>
-          <div style={{ fontSize: 32 }}>
-            {overall[0].includes("STRONG") ? "🟢" : overall[0].includes("MODERATE") ? "🟡" : overall[0].includes("NEUTRAL") ? "🟡" : "🔴"}
+        <div style={{ background: overall[1] + "11", border: `1px solid ${overall[1]}33`, borderRadius: 12, padding: "16px", marginBottom: 16 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 4 }}>
+            <span style={{ fontSize: 26 }}>
+              {overall[0].includes("STRONG") ? "🟢" : overall[0].includes("MODERATE") ? "🟡" : overall[0].includes("NEUTRAL") ? "🟡" : "🔴"}
+            </span>
+            <span style={{ fontFamily: "monospace", fontSize: 16, fontWeight: 700, color: overall[1], flex: 1 }}>{overall[0]}</span>
+            <span style={{ fontSize: 10, color: "#2a2a2a", fontFamily: "monospace", flexShrink: 0 }}>
+              {lastUpdated ? lastUpdated.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" }) : ""}
+            </span>
+            <button onClick={load} disabled={loading} style={{ background: "transparent", border: "1px solid #222", borderRadius: 8, color: loading ? "#2a2a2a" : "#555", padding: "6px 10px", cursor: "pointer", display: "flex", alignItems: "center", flexShrink: 0 }}>
+              {loading ? <Spinner/> : <Icon name="refresh" size={13}/>}
+            </button>
           </div>
-          <div>
-            <div style={{ fontFamily: "monospace", fontSize: 18, fontWeight: 700, color: overall[1] }}>{overall[0]}</div>
-            <div style={{ fontSize: 12, color: "#666", marginTop: 4 }}>{overall[2]}</div>
-          </div>
-          <div style={{ marginLeft: "auto", fontSize: 10, color: "#2a2a2a", fontFamily: "monospace" }}>
-            {lastUpdated ? `updated ${lastUpdated.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" })}` : ""}
-          </div>
-          <button onClick={load} disabled={loading} style={{ background: "transparent", border: "1px solid #222", borderRadius: 8, color: loading ? "#2a2a2a" : "#555", padding: "7px 12px", cursor: "pointer", display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}>
-            {loading ? <Spinner/> : <Icon name="refresh" size={13}/>}
-          </button>
+          <div style={{ fontSize: 12, color: "#555", paddingLeft: 38 }}>{overall[2]}</div>
         </div>
       )}
 
@@ -2520,12 +2520,12 @@ function MarktTab() {
         <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
 
           {/* Rij 1: VIX + Fear & Greed */}
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
             {/* VIX */}
-            <div style={{ background: "#070707", border: "1px solid #141414", borderRadius: 12, padding: "20px 22px" }}>
+            <div style={{ background: "#070707", border: "1px solid #141414", borderRadius: 12, padding: "14px 16px" }}>
               <div style={{ fontSize: 10, color: "#444", textTransform: "uppercase", letterSpacing: 1.2, marginBottom: 12 }}>VIX — Volatility Index</div>
               <div style={{ display: "flex", alignItems: "baseline", gap: 12, marginBottom: 8 }}>
-                <span style={{ fontFamily: "monospace", fontSize: 36, fontWeight: 700, color: vColor }}>{data?.vix?.toFixed(1) || "—"}</span>
+                <span style={{ fontFamily: "monospace", fontSize: 28, fontWeight: 700, color: vColor }}>{data?.vix?.toFixed(1) || "—"}</span>
                 {data?.vixChange != null && (
                   <span style={{ fontFamily: "monospace", fontSize: 13, color: data.vixChange >= 0 ? "#ff6b6b" : "#00e5a0" }}>
                     {data.vixChange >= 0 ? "+" : ""}{data.vixChange.toFixed(1)}%
@@ -2548,12 +2548,12 @@ function MarktTab() {
             </div>
 
             {/* Fear & Greed */}
-            <div style={{ background: "#070707", border: "1px solid #141414", borderRadius: 12, padding: "20px 22px" }}>
+            <div style={{ background: "#070707", border: "1px solid #141414", borderRadius: 12, padding: "14px 16px" }}>
               <div style={{ fontSize: 10, color: "#444", textTransform: "uppercase", letterSpacing: 1.2, marginBottom: 12 }}>Fear & Greed Index — CNN</div>
               {data?.fearGreed ? (
                 <>
                   <div style={{ display: "flex", alignItems: "baseline", gap: 12, marginBottom: 8 }}>
-                    <span style={{ fontFamily: "monospace", fontSize: 36, fontWeight: 700, color: fgColor }}>{data.fearGreed.score}</span>
+                    <span style={{ fontFamily: "monospace", fontSize: 28, fontWeight: 700, color: fgColor }}>{data.fearGreed.score}</span>
                     <span style={{ fontSize: 12, color: "#555" }}>/ 100</span>
                   </div>
                   <div style={{ display: "inline-block", background: fgColor + "22", border: `1px solid ${fgColor}44`, borderRadius: 5, padding: "3px 10px", fontSize: 11, fontWeight: 700, color: fgColor, fontFamily: "monospace", marginBottom: 8 }}>{fgLabel}</div>
@@ -2579,7 +2579,7 @@ function MarktTab() {
           </div>
 
           {/* Rij 2: S&P500, Treasury, DXY */}
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(140px, 1fr))", gap: 10 }}>
             {[
               {
                 label: "S&P 500",
@@ -2607,10 +2607,10 @@ function MarktTab() {
                 note: "Strong = headwind for international revenue"
               }
             ].map(item => (
-              <div key={item.label} style={{ background: "#070707", border: "1px solid #141414", borderRadius: 12, padding: "18px 20px" }}>
-                <div style={{ fontSize: 10, color: "#444", textTransform: "uppercase", letterSpacing: 1.2, marginBottom: 10 }}>{item.label}</div>
-                <div style={{ display: "flex", alignItems: "baseline", gap: 10, marginBottom: 6 }}>
-                  <span style={{ fontFamily: "monospace", fontSize: 24, fontWeight: 700, color: item.color }}>{item.value}</span>
+              <div key={item.label} style={{ background: "#070707", border: "1px solid #141414", borderRadius: 12, padding: "14px 14px" }}>
+                <div style={{ fontSize: 9, color: "#444", textTransform: "uppercase", letterSpacing: 1, marginBottom: 8 }}>{item.label}</div>
+                <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginBottom: 4, flexWrap: "wrap" }}>
+                  <span style={{ fontFamily: "monospace", fontSize: 20, fontWeight: 700, color: item.color }}>{item.value}</span>
                   {item.change != null && (
                     <span style={{ fontFamily: "monospace", fontSize: 12, color: item.change >= 0 ? "#00e5a0" : "#ff6b6b" }}>
                       {item.change >= 0 ? "+" : ""}{item.change.toFixed(item.changeUnit ? 0 : 2)}{item.changeUnit || "%"}
@@ -2624,8 +2624,8 @@ function MarktTab() {
           </div>
 
           {/* Rational conclusions */}
-          <div style={{ background: "#070707", border: "1px solid #1a1a1a", borderRadius: 12, padding: "20px 24px" }}>
-            <div style={{ fontSize: 10, color: "#444", textTransform: "uppercase", letterSpacing: 1.2, marginBottom: 14 }}>Rational market context for entry decisions</div>
+          <div style={{ background: "#070707", border: "1px solid #1a1a1a", borderRadius: 12, padding: "14px 16px" }}>
+            <div style={{ fontSize: 10, color: "#444", textTransform: "uppercase", letterSpacing: 1, marginBottom: 12 }}>Market context for entry decisions</div>
             <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
               {[
                 data?.vix > 30
@@ -2705,60 +2705,194 @@ export default function App() {
         input:focus, textarea:focus { border-color: #00e5a033 !important; }
         ::-webkit-scrollbar { width: 3px; } ::-webkit-scrollbar-thumb { background: #1e1e1e; }
         .recharts-tooltip-wrapper { outline: none; }
-        /* ── Mobile ── */
-        .ei-form-row { display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-end; }
-        .ei-field { display: flex; flex-direction: column; gap: 4px; flex: 1 1 140px; min-width: 0; }
-        .ei-field input, .ei-field select {
-          width: 100%; background: #0d0d0d; border: 1px solid #222; border-radius: 6px;
-          color: #d0d0d0; padding: 10px 12px; font-size: 16px; font-family: monospace;
-          -webkit-appearance: none; appearance: none;
+
+        /* ── App shell ── */
+        .app-header {
+          border-bottom: 1px solid #0e0e0e;
+          padding: 0 20px;
+          display: flex;
+          align-items: center;
+          gap: 12px;
+          background: #060606;
+          position: sticky;
+          top: 0;
+          z-index: 10;
+          overflow: hidden;
         }
-        .ei-field select { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%23555'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 10px center; padding-right: 28px; }
-        .ei-label { font-size: 10px; color: #555; text-transform: uppercase; letter-spacing: 0.8px; }
-        .ei-save-btn { background: #00e5a0; border: none; border-radius: 8px; color: #000; padding: 12px 24px; font-size: 15px; font-weight: 700; cursor: pointer; width: 100%; margin-top: 4px; }
-        .ei-nav { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 4px; -webkit-overflow-scrolling: touch; scrollbar-width: none; }
-        .ei-nav::-webkit-scrollbar { display: none; }
-        .ei-nav-btn { flex-shrink: 0; border-radius: 7px; padding: 8px 14px; cursor: pointer; font-size: 12px; font-weight: 600; white-space: nowrap; border: 1px solid #1a1a1a; background: transparent; color: #555; }
-        .ei-nav-btn.active { background: #00e5a011; border-color: #00e5a033; color: #00e5a0; }
-        .app-tabs { display: flex; gap: 0; overflow-x: auto; flex: 1; -webkit-overflow-scrolling: touch; scrollbar-width: none; }
+        .app-logo {
+          padding: 14px 0;
+          display: flex;
+          align-items: baseline;
+          gap: 5px;
+          flex-shrink: 0;
+        }
+        .app-tabs {
+          display: flex;
+          gap: 0;
+          overflow-x: auto;
+          flex: 1;
+          -webkit-overflow-scrolling: touch;
+          scrollbar-width: none;
+          min-width: 0;
+        }
         .app-tabs::-webkit-scrollbar { display: none; }
-        @media (max-width: 600px) {
-          .ei-field { flex: 1 1 calc(50% - 6px); }
+        .app-tab-btn {
+          background: transparent;
+          border: none;
+          border-bottom: 2px solid transparent;
+          color: #3a3a3a;
+          padding: 14px 12px;
+          cursor: pointer;
+          display: flex;
+          align-items: center;
+          gap: 5px;
+          font-size: 13px;
+          font-weight: 400;
+          white-space: nowrap;
+          transition: all 0.15s;
+          flex-shrink: 0;
+        }
+        .app-tab-btn.active { border-bottom-color: #00e5a0; color: #e0e0e0; font-weight: 600; }
+        .app-meta { display: flex; align-items: center; gap: 5px; font-size: 10px; color: #1e1e1e; font-family: monospace; flex-shrink: 0; }
+        .app-content { padding: 20px 20px; max-width: 1400px; margin: 0 auto; }
+
+        /* ── Cards grid ── */
+        .cards-grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
+        .stat-card { background: #070707; border: 1px solid #141414; border-radius: 10px; padding: 14px; }
+        .stat-card-label { font-size: 9px; color: #333; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px; }
+        .stat-card-value { font-family: monospace; font-size: 16px; font-weight: 700; }
+
+        /* ── Edge Intel forms ── */
+        .ei-form-row { display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-end; }
+        .ei-field { display: flex; flex-direction: column; gap: 5px; flex: 1 1 140px; min-width: 0; }
+        .ei-field.wide { flex: 2 1 220px; }
+        .ei-field.full { flex: 1 1 100%; }
+        .ei-field input, .ei-field select {
+          width: 100%;
+          background: #0d0d0d;
+          border: 1px solid #222;
+          border-radius: 8px;
+          color: #d0d0d0;
+          padding: 11px 12px;
+          font-size: 16px;
+          font-family: monospace;
+          -webkit-appearance: none;
+          appearance: none;
+        }
+        .ei-field select {
+          background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%23555'/%3E%3C/svg%3E");
+          background-repeat: no-repeat;
+          background-position: right 12px center;
+          padding-right: 32px;
+        }
+        .ei-label { font-size: 10px; color: #555; text-transform: uppercase; letter-spacing: 0.8px; }
+        .ei-save-btn {
+          flex: 1 1 100%;
+          background: #00e5a0;
+          border: none;
+          border-radius: 8px;
+          color: #000;
+          padding: 13px 24px;
+          font-size: 15px;
+          font-weight: 700;
+          cursor: pointer;
+          margin-top: 2px;
+          letter-spacing: 0.3px;
+        }
+        .ei-save-btn:active { opacity: 0.85; }
+        .ei-nav {
+          display: flex;
+          gap: 6px;
+          overflow-x: auto;
+          padding-bottom: 6px;
+          -webkit-overflow-scrolling: touch;
+          scrollbar-width: none;
+          margin-bottom: 16px;
+        }
+        .ei-nav::-webkit-scrollbar { display: none; }
+        .ei-nav-btn {
+          flex-shrink: 0;
+          border-radius: 8px;
+          padding: 9px 16px;
+          cursor: pointer;
+          font-size: 12px;
+          font-weight: 600;
+          white-space: nowrap;
+          border: 1px solid #1a1a1a;
+          background: transparent;
+          color: #555;
+        }
+        .ei-nav-btn.active { background: #00e5a011; border-color: #00e5a033; color: #00e5a0; }
+        .ei-formbox {
+          background: #070707;
+          border-radius: 10px;
+          padding: 16px;
+          margin-bottom: 16px;
+        }
+        .ei-formbox-title {
+          font-size: 10px;
+          font-weight: 700;
+          text-transform: uppercase;
+          letter-spacing: 1px;
+          margin-bottom: 14px;
+        }
+        .ei-hint { margin-top: 10px; font-size: 10px; color: #2a2a2a; line-height: 1.6; }
+
+        /* ── Valuation assumption inputs ── */
+        .val-input {
+          width: 100%;
+          background: transparent;
+          border: none;
+          color: #f5c842;
+          font-family: monospace;
+          font-size: 14px;
+          outline: none;
+        }
+
+        /* ── Responsive breakpoints ── */
+        @media (max-width: 480px) {
+          .app-meta { display: none; }
+          .app-content { padding: 14px 14px; }
+          .cards-grid { grid-template-columns: 1fr 1fr; }
+          .ei-field { flex: 1 1 calc(50% - 5px); }
+          .ei-field.wide { flex: 1 1 100%; }
           .ei-field.full { flex: 1 1 100%; }
-          .app-header { padding: 0 16px !important; }
-          .app-content { padding: 16px !important; }
+        }
+        @media (min-width: 481px) and (max-width: 768px) {
+          .app-content { padding: 18px 18px; }
+          .cards-grid { grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); }
         }
       `}</style>
 
       {/* Header */}
-      <div className="app-header" style={{ borderBottom: "1px solid #0e0e0e", padding: "0 32px", display: "flex", alignItems: "center", gap: 16, background: "#060606", position: "sticky", top: 0, zIndex: 10 }}>
-        <div style={{ padding: "16px 0", display: "flex", alignItems: "baseline", gap: 7 }}>
-          <span style={{ fontFamily: "monospace", fontSize: 15, fontWeight: 700, color: "#fff", letterSpacing: 1 }}>ALPHA</span>
-          <span style={{ fontFamily: "monospace", fontSize: 15, fontWeight: 700, color: "#00e5a0" }}>DESK</span>
+      <div className="app-header">
+        <div className="app-logo">
+          <span style={{ fontFamily: "monospace", fontSize: 14, fontWeight: 700, color: "#fff", letterSpacing: 1 }}>ALPHA</span>
+          <span style={{ fontFamily: "monospace", fontSize: 14, fontWeight: 700, color: "#00e5a0" }}>DESK</span>
         </div>
         <div className="app-tabs">
           {TABS.map(t => (
             <button key={t.id} onClick={() => setTab(t.id)}
-              style={{ background: "transparent", border: "none", borderBottom: `2px solid ${tab === t.id ? "#00e5a0" : "transparent"}`, color: tab === t.id ? "#e0e0e0" : "#3a3a3a", padding: "16px 14px", cursor: "pointer", display: "flex", alignItems: "center", gap: 7, fontSize: 13, fontWeight: tab === t.id ? 600 : 400, transition: "all 0.2s", whiteSpace: "nowrap" }}>
-              <Icon name={t.icon} size={13}/> {t.label}
+              className={"app-tab-btn" + (tab === t.id ? " active" : "")}>
+              {t.label}
             </button>
           ))}
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 10, color: "#1e1e1e", fontFamily: "monospace" }}>
-          <Icon name="db" size={10}/> Supabase · Yahoo Finance
+        <div className="app-meta">
+          <Icon name="db" size={10}/> SB
         </div>
       </div>
 
       {/* Content */}
-      <div className="app-content" style={{ padding: "24px 32px", maxWidth: 1400, margin: "0 auto" }}>
+      <div className="app-content">
         {booting ? (
           <div style={{ display: "flex", alignItems: "center", gap: 12, color: "#2a2a2a", fontFamily: "monospace", padding: "60px 0" }}>
             <Spinner size={18}/> Connecting to database…
           </div>
         ) : (
           <>
-            <div style={{ marginBottom: 20 }}>
-              <h1 style={{ fontSize: 20, fontWeight: 700, color: "#e0e0e0", letterSpacing: -0.3 }}>
+            <div style={{ marginBottom: 16 }}>
+              <h1 style={{ fontSize: 18, fontWeight: 700, color: "#e0e0e0", letterSpacing: -0.3 }}>
                 {tab === "markt" && "Market Dashboard"}
                 {tab === "shortlist" && "Entry Timing Dashboard"}
                 {tab === "portfolio" && "Portfolio"}
