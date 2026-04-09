@@ -1596,26 +1596,43 @@ function ValuationTab({ positions, shortlist }) {
                      : epsGrowth5Y ? "Finnhub 5Y"
                      : "est";
 
-      // ── Starting EPS: trailing (realised) — no double-counting ─────────────
-      const baseEps = (trailingEps && trailingEps > 0)
-        ? trailingEps
-        : (currentPrice && trailingPE && trailingPE > 0 ? currentPrice / trailingPE
-        : (currentPrice && forwardPE ? currentPrice / forwardPE
-        : null));
+      // ── EPS + PE: must be consistent pair ────────────────────────────────────
+      // eps_basis from config determines starting EPS AND which PE is the anchor.
+      // 'forward': start at forwardEps, anchor on forwardPE → band t=0 ≈ current price
+      // 'trailing': start at trailingEps, anchor on trailingPE → good for banks/mature
+      //
+      // Sanity check: base band at t=0 should be within 30% of current price.
+      // If not, we auto-switch to the other basis.
 
-      // ── PE range: config-driven multipliers on the anchor PE ─────────────
-      // Anchor PE: forward (most stocks) or trailing (banks/mature)
-      let anchorPE, useForwardPEBasis = true, histPEsCount = 0;
-      if (cfg.pe_method === 'trailing' && trailingPE && trailingPE > 0 && trailingPE < 80) {
-        anchorPE = trailingPE;
+      const epsBasis = cfg.eps_basis || 'forward';
+      let baseEps, anchorPE, useForwardPEBasis, histPEsCount = 0;
+
+      if (epsBasis === 'trailing' && trailingEps && trailingEps > 0
+          && trailingPE && trailingPE > 0 && trailingPE < 80) {
+        baseEps   = trailingEps;
+        anchorPE  = trailingPE;
         useForwardPEBasis = false;
-      } else if (cfg.pe_method === 'blend' && forwardPE && trailingPE && trailingPE < 100) {
-        anchorPE = forwardPE * 0.60 + trailingPE * 0.40;
       } else {
+        // Forward basis (default for most stocks)
+        // Use forward EPS if available, else derive from price/PE
+        baseEps = forwardEps
+          || (currentPrice && forwardPE ? currentPrice / forwardPE : null)
+          || (trailingEps && trailingEps > 0 ? trailingEps : null);
         anchorPE = forwardPE || trailingPE || 20;
+        useForwardPEBasis = true;
       }
 
-      // Apply config multipliers — these encode the expected PE range for this stock type
+      // Sanity check: base band at t=0 should ≈ current price
+      // If baseEps × anchorPE is way off, it means data is distorted
+      const impliedPrice = baseEps && anchorPE ? baseEps * anchorPE : null;
+      const priceRatio = impliedPrice && currentPrice ? impliedPrice / currentPrice : 1;
+      // If ratio is >2 or <0.4, there's a mismatch — use price/PE directly
+      if (priceRatio > 2.0 || priceRatio < 0.4) {
+        // Fallback: derive baseEps directly from current price so band starts at price
+        baseEps  = currentPrice && anchorPE ? currentPrice / anchorPE : baseEps;
+      }
+
+      // Config multipliers define the bear/base/bull PE range for this stock type
       const peBear = anchorPE * (cfg.pe_bear_mult || 0.70);
       const peBase = anchorPE * (cfg.pe_base_mult || 1.00);
       const peBull = anchorPE * (cfg.pe_bull_mult || 1.40);
@@ -1654,8 +1671,10 @@ function ValuationTab({ positions, shortlist }) {
         trailingEps, forwardEps, baseEps,
         stockType: cfg.stock_type || "generic",
         cfgNote: cfg.note || null,
-        baseEpsSource: (trailingEps && trailingEps > 0) ? "trailing EPS"
-          : (trailingPE ? "price÷trailing PE" : "price÷forward PE"),
+        epsBasis: epsBasis,
+        anchorPE: anchorPE,
+        baseEpsSource: epsBasis === 'trailing' ? "trailing EPS"
+          : (forwardEps ? "forward EPS" : "derived"),
         g1Auto, g2Auto, g1Source, g2Source, g1Capped, rawG1,
         peBear, peBase, peBull,
         useForwardPEBasis, histPEsCount,
@@ -1909,7 +1928,8 @@ function ValuationTab({ positions, shortlist }) {
               ["Phase 1 Growth",`${(effectiveG1*100).toFixed(1)}%/yr${data.g1Capped && !customG1 ? " ⚠" : ""}`, customG1 ? "#f5c842" : data.g1Capped ? "#f5c842" : "#888"],
               ["Phase 2 Growth",`${(effectiveG2*100).toFixed(1)}%/yr`,  customG2 ? "#f5c842" : "#555"],
               ["Base PE",       `${effectivePEBase.toFixed(0)}×`,        customPE ? "#f5c842" : "#888"],
-              ["Base EPS", data.baseEps ? `$${data.baseEps.toFixed(2)} (${data.baseEpsSource})` : "—", "#888"],
+              ["Base EPS", data.baseEps ? `$${data.baseEps.toFixed(2)}` : "—", "#888"],
+              ["EPS basis", `${data.epsBasis || "fwd"} · PE ${data.anchorPE?.toFixed(0)}×`, "#555"],
               [upsideToBase != null ? `${growthYears}Y Upside (base)` : "Analyst Target",
                upsideToBase != null ? `${upsideToBase >= 0 ? "+" : ""}${upsideToBase.toFixed(0)}%`
                                     : (data.targetMean ? `$${data.targetMean.toFixed(0)}` : "—"),
