@@ -2079,6 +2079,339 @@ function ValuationTab({ positions, shortlist }) {
     </div>
   );
 }
+// ── Edge Intel Tab ────────────────────────────────────────────────────────────
+// Manually entered semiconductor market intelligence from PDF reports.
+// 5 sections: Growth Signals / Market Data / Capex / ASML Tool Plan / ASML Revenue Calc
+function EdgeIntelTab() {
+  const [section, setSection]     = useState("signals");
+  const [marketData, setMktData]  = useState([]);
+  const [capexData, setCapData]   = useState([]);
+  const [toolData, setToolData]   = useState([]);
+  const [signals, setSignals]     = useState([]);
+  const [loading, setLoading]     = useState(true);
+  const [saving, setSaving]       = useState(false);
+
+  const [mktF, setMktF]   = useState({ period:"", segment:"DRAM", metric:"revenue_growth_yoy", value:"", notes:"" });
+  const [capF, setCapF]   = useState({ period:"", company:"TSMC", capex_usd_b:"", capex_growth_yoy:"", primary_use:"EUV_ramp", notes:"" });
+  const [toolF, setToolF] = useState({ period:"", tool_type:"NXE_low_NA", units_plan:"", asp_eur_m:"230", notes:"" });
+  const [sigF, setSigF]   = useState({ symbol:"ASML", implied_g1_pct:"", implied_g2_pct:"", signal:"bullish", vs_consensus:"above", delta_pct:"", key_driver:"" });
+
+  const ASP = { DUV:45, NXE_low_NA:230, NXE_high_NA:380, EXE:380 };
+
+  const load = async () => {
+    setLoading(true);
+    const [{ data:m },{ data:c },{ data:t },{ data:s }] = await Promise.all([
+      SB.from("edge_intel_market").select("*").neq("period","REFERENCE").order("period",{ascending:false}).limit(80),
+      SB.from("edge_intel_capex").select("*").order("period",{ascending:false}).limit(60),
+      SB.from("edge_intel_asml_tools").select("*").neq("period","REFERENCE").order("period",{ascending:false}).limit(60),
+      SB.from("edge_intel_growth_signals").select("*").order("as_of_date",{ascending:false}).limit(30),
+    ]);
+    setMktData(m||[]); setCapData(c||[]); setToolData(t||[]); setSignals(s||[]);
+    setLoading(false);
+  };
+  useEffect(()=>{ load(); },[]);
+  useEffect(()=>{ setToolF(f=>({...f, asp_eur_m: String(ASP[f.tool_type]||"")})); },[toolF.tool_type]);
+
+  const saveMkt = async () => {
+    if (!mktF.period||!mktF.value) return;
+    setSaving(true);
+    await SB.from("edge_intel_market").upsert({ period:mktF.period, segment:mktF.segment, metric:mktF.metric, value:parseFloat(mktF.value), notes:mktF.notes||null },{ onConflict:"period,segment,metric" });
+    setMktF(f=>({...f,value:"",notes:""})); await load(); setSaving(false);
+  };
+  const saveCap = async () => {
+    if (!capF.period||!capF.company) return;
+    setSaving(true);
+    await SB.from("edge_intel_capex").upsert({ period:capF.period, company:capF.company, capex_usd_b:capF.capex_usd_b?parseFloat(capF.capex_usd_b):null, capex_growth_yoy:capF.capex_growth_yoy?parseFloat(capF.capex_growth_yoy):null, primary_use:capF.primary_use, notes:capF.notes||null },{ onConflict:"period,company" });
+    setCapF(f=>({...f,capex_usd_b:"",capex_growth_yoy:"",notes:""})); await load(); setSaving(false);
+  };
+  const saveTool = async () => {
+    if (!toolF.period||!toolF.units_plan) return;
+    setSaving(true);
+    await SB.from("edge_intel_asml_tools").upsert({ period:toolF.period, tool_type:toolF.tool_type, units_plan:parseFloat(toolF.units_plan), asp_eur_m:toolF.asp_eur_m?parseFloat(toolF.asp_eur_m):ASP[toolF.tool_type], notes:toolF.notes||null },{ onConflict:"period,tool_type" });
+    setToolF(f=>({...f,units_plan:"",notes:""})); await load(); setSaving(false);
+  };
+  const saveSig = async () => {
+    if (!sigF.symbol||!sigF.implied_g1_pct) return;
+    setSaving(true);
+    await SB.from("edge_intel_growth_signals").upsert({ as_of_date:new Date().toISOString().split("T")[0], symbol:sigF.symbol, implied_g1_pct:parseFloat(sigF.implied_g1_pct), implied_g2_pct:sigF.implied_g2_pct?parseFloat(sigF.implied_g2_pct):null, signal:sigF.signal, vs_consensus:sigF.vs_consensus, delta_pct:sigF.delta_pct?parseFloat(sigF.delta_pct):null, key_driver:sigF.key_driver||null },{ onConflict:"as_of_date,symbol" });
+    await load(); setSaving(false);
+  };
+
+  // Group helpers
+  const byPeriod = (arr) => arr.reduce((acc,r)=>{ (acc[r.period]=acc[r.period]||[]).push(r); return acc; },{});
+
+  // ASML implied revenue calc
+  const asmlQ = {};
+  toolData.forEach(t=>{
+    if (!asmlQ[t.period]) asmlQ[t.period]={ period:t.period, total:0, items:[] };
+    const rev=(t.units_plan||0)*(t.asp_eur_m||0);
+    asmlQ[t.period].total+=rev;
+    asmlQ[t.period].items.push({type:t.tool_type,units:t.units_plan,asp:t.asp_eur_m,rev});
+  });
+
+  const sColor = { bullish:"#00e5a0", neutral:"#f5c842", bearish:"#ff6b6b" };
+  const vColor = { above:"#00e5a0", in_line:"#f5c842", below:"#ff6b6b" };
+
+  // Reusable field
+  const F = ({ label, value, onChange, type="text", options=null, w=120, placeholder="" }) => (
+    <div style={{ display:"flex", flexDirection:"column", gap:4 }}>
+      <span style={{ fontSize:9, color:"#444", textTransform:"uppercase", letterSpacing:0.8 }}>{label}</span>
+      {options
+        ? <select value={value} onChange={e=>onChange(e.target.value)} style={{ width:w, background:"#0d0d0d", border:"1px solid #222", borderRadius:6, color:"#d0d0d0", padding:"6px 8px", fontSize:12 }}>
+            {options.map(o=><option key={o}>{o}</option>)}
+          </select>
+        : <input type={type} value={value} onChange={e=>onChange(e.target.value)} placeholder={placeholder}
+            style={{ width:w, background:"#0d0d0d", border:"1px solid #222", borderRadius:6, color:"#d0d0d0", padding:"6px 8px", fontSize:12, fontFamily:"monospace" }}/>
+      }
+    </div>
+  );
+
+  const Btn = ({ label="Save", onClick, color="#00e5a0", textColor="#000" }) => (
+    <button onClick={onClick} disabled={saving}
+      style={{ background:color, border:"none", borderRadius:6, color:textColor, padding:"6px 18px", cursor:"pointer", fontSize:12, fontWeight:700, alignSelf:"flex-end" }}>
+      {saving?"…":label}
+    </button>
+  );
+
+  const NavBtn = ({ id, label }) => (
+    <button onClick={()=>setSection(id)} style={{ background:section===id?"#00e5a011":"transparent", border:`1px solid ${section===id?"#00e5a033":"#1a1a1a"}`, borderRadius:7, color:section===id?"#00e5a0":"#555", padding:"6px 16px", cursor:"pointer", fontSize:12, fontWeight:section===id?700:400 }}>{label}</button>
+  );
+
+  const Card = ({ label, value, color="#888", sub="" }) => (
+    <div style={{ background:"#111", borderRadius:7, padding:"10px 12px" }}>
+      <div style={{ fontSize:9, color:"#333", textTransform:"uppercase", letterSpacing:0.8, marginBottom:5 }}>{label}</div>
+      <div style={{ fontFamily:"monospace", fontSize:15, fontWeight:700, color }}>{value}</div>
+      {sub && <div style={{ fontSize:9, color:"#2a2a2a", marginTop:3 }}>{sub}</div>}
+    </div>
+  );
+
+  const FormBox = ({ title, color="#f5c842", children }) => (
+    <div style={{ background:"#070707", border:`1px solid ${color}22`, borderRadius:10, padding:"14px 16px", marginBottom:16 }}>
+      <div style={{ fontSize:10, color, fontWeight:700, textTransform:"uppercase", letterSpacing:1, marginBottom:12 }}>{title}</div>
+      {children}
+    </div>
+  );
+
+  if (loading) return <div style={{ display:"flex", justifyContent:"center", padding:60 }}><Spinner size={24}/></div>;
+
+  return (
+    <div>
+      {/* Nav */}
+      <div style={{ display:"flex", gap:8, marginBottom:20, flexWrap:"wrap" }}>
+        <NavBtn id="signals"   label="⚡ Growth Signals"/>
+        <NavBtn id="market"    label="📊 Market Data"/>
+        <NavBtn id="capex"     label="💰 Capex by Company"/>
+        <NavBtn id="tools"     label="🔧 ASML Tool Plan"/>
+        <NavBtn id="calc"      label="📐 ASML Revenue Calc"/>
+      </div>
+
+      {/* ── GROWTH SIGNALS ──────────────────────────────────────────────────── */}
+      {section==="signals" && <>
+        <FormBox title="⚡ Add Growth Signal — derived from your edge intel" color="#00e5a0">
+          <div style={{ display:"flex", gap:12, flexWrap:"wrap", alignItems:"flex-end" }}>
+            <F label="Stock" value={sigF.symbol} onChange={v=>setSigF(f=>({...f,symbol:v}))} options={["ASML","TSM","MU","MRVL","CLS","POWL","LLY","META","BAC"]} w={100}/>
+            <F label="Implied G1 %" value={sigF.implied_g1_pct} onChange={v=>setSigF(f=>({...f,implied_g1_pct:v}))} type="number" w={95} placeholder="e.g. 28"/>
+            <F label="Implied G2 %" value={sigF.implied_g2_pct} onChange={v=>setSigF(f=>({...f,implied_g2_pct:v}))} type="number" w={95} placeholder="e.g. 12"/>
+            <F label="Signal" value={sigF.signal} onChange={v=>setSigF(f=>({...f,signal:v}))} options={["bullish","neutral","bearish"]} w={110}/>
+            <F label="vs Consensus" value={sigF.vs_consensus} onChange={v=>setSigF(f=>({...f,vs_consensus:v}))} options={["above","in_line","below"]} w={110}/>
+            <F label="Delta %" value={sigF.delta_pct} onChange={v=>setSigF(f=>({...f,delta_pct:v}))} type="number" w={80} placeholder="+12"/>
+            <F label="Key driver (one line)" value={sigF.key_driver} onChange={v=>setSigF(f=>({...f,key_driver:v}))} w={280} placeholder="e.g. NXE shipments Q3 above consensus by 4 units"/>
+            <Btn onClick={saveSig}/>
+          </div>
+          <div style={{ marginTop:10, fontSize:10, color:"#2a2a2a" }}>
+            Signals auto-feed into the Valuation tab — when a signal exists for a stock it overrides the auto-detected growth rate.
+          </div>
+        </FormBox>
+
+        {signals.length===0
+          ? <div style={{ color:"#2a2a2a", fontFamily:"monospace", textAlign:"center", padding:40 }}>No signals yet. Enter your first intel above after reading the monthly report.</div>
+          : <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+              {signals.map(s=>(
+                <div key={s.id} style={{ background:"#070707", border:`1px solid ${sColor[s.signal]}22`, borderRadius:10, padding:"12px 18px", display:"grid", gridTemplateColumns:"90px 110px 90px 80px 110px 120px 1fr 28px", gap:12, alignItems:"center" }}>
+                  <div style={{ fontFamily:"monospace", fontWeight:700, fontSize:14, color:"#e0e0e0" }}>{s.symbol}</div>
+                  <div style={{ fontSize:10, color:"#444" }}>{s.as_of_date}</div>
+                  <div style={{ fontFamily:"monospace", fontSize:13, color:"#f5c842" }}>G1 {s.implied_g1_pct}%</div>
+                  <div style={{ fontFamily:"monospace", fontSize:12, color:"#555" }}>G2 {s.implied_g2_pct??'—'}%</div>
+                  <div style={{ fontSize:11, fontWeight:700, color:sColor[s.signal], textTransform:"uppercase" }}>{s.signal}</div>
+                  <div style={{ fontSize:11, color:vColor[s.vs_consensus] }}>
+                    {s.vs_consensus==="above"?"▲":s.vs_consensus==="below"?"▼":"="} consensus
+                    {s.delta_pct!=null && <span style={{ marginLeft:5 }}>({s.delta_pct>0?"+":""}{s.delta_pct}%)</span>}
+                  </div>
+                  <div style={{ fontSize:11, color:"#444", fontStyle:"italic", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{s.key_driver}</div>
+                  <button onClick={async()=>{ await SB.from("edge_intel_growth_signals").delete().eq("id",s.id); load(); }}
+                    style={{ background:"transparent", border:"none", color:"#2a2a2a", cursor:"pointer", fontSize:14, padding:0 }}
+                    onMouseEnter={e=>e.target.style.color="#ff6b6b"} onMouseLeave={e=>e.target.style.color="#2a2a2a"}>×</button>
+                </div>
+              ))}
+            </div>
+        }
+      </>}
+
+      {/* ── MARKET DATA ─────────────────────────────────────────────────────── */}
+      {section==="market" && <>
+        <FormBox title="📊 Add Market Data — monthly revenue + capex growth per segment">
+          <div style={{ display:"flex", gap:12, flexWrap:"wrap", alignItems:"flex-end" }}>
+            <F label="Period (e.g. Apr-2026)" value={mktF.period} onChange={v=>setMktF(f=>({...f,period:v}))} w={150} placeholder="Apr-2026"/>
+            <F label="Segment" value={mktF.segment} onChange={v=>setMktF(f=>({...f,segment:v}))} options={["DRAM","NAND","Logic","WFE_total","Generic","HBM"]} w={130}/>
+            <F label="Metric" value={mktF.metric} onChange={v=>setMktF(f=>({...f,metric:v}))} options={["revenue_growth_yoy","capex_growth_yoy","wafer_starts_growth","revenue_qoq","capex_qoq"]} w={200}/>
+            <F label="Value (%)" value={mktF.value} onChange={v=>setMktF(f=>({...f,value:v}))} type="number" w={90} placeholder="35.0"/>
+            <F label="Notes" value={mktF.notes} onChange={v=>setMktF(f=>({...f,notes:v}))} w={220} placeholder="optional context"/>
+            <Btn onClick={saveMkt}/>
+          </div>
+        </FormBox>
+        {Object.entries(byPeriod(marketData)).map(([period,rows])=>(
+          <div key={period} style={{ background:"#070707", border:"1px solid #141414", borderRadius:10, padding:"12px 16px", marginBottom:10 }}>
+            <div style={{ fontSize:11, color:"#555", fontFamily:"monospace", fontWeight:700, marginBottom:10 }}>{period}</div>
+            <div style={{ display:"flex", gap:10, flexWrap:"wrap" }}>
+              {rows.map(r=>(
+                <div key={r.id} style={{ background:"#0a0a0a", borderRadius:7, padding:"8px 12px", minWidth:150 }}>
+                  <div style={{ fontSize:9, color:"#333", textTransform:"uppercase", letterSpacing:0.8 }}>{r.segment} · {r.metric.replace(/_/g," ")}</div>
+                  <div style={{ fontFamily:"monospace", fontSize:17, fontWeight:700, color:r.value>0?"#00e5a0":"#ff6b6b", marginTop:4 }}>
+                    {r.value>0?"+":""}{r.value}%
+                  </div>
+                  {r.notes && <div style={{ fontSize:9, color:"#2a2a2a", marginTop:3 }}>{r.notes}</div>}
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
+        {marketData.length===0 && <div style={{ color:"#2a2a2a", fontFamily:"monospace", textAlign:"center", padding:40 }}>No market data yet</div>}
+      </>}
+
+      {/* ── CAPEX ───────────────────────────────────────────────────────────── */}
+      {section==="capex" && <>
+        <FormBox title="💰 Add Capex by Company — quarterly spend">
+          <div style={{ display:"flex", gap:12, flexWrap:"wrap", alignItems:"flex-end" }}>
+            <F label="Period (e.g. Q2-2026)" value={capF.period} onChange={v=>setCapF(f=>({...f,period:v}))} w={150} placeholder="Q2-2026"/>
+            <F label="Company" value={capF.company} onChange={v=>setCapF(f=>({...f,company:v}))} options={["TSMC","Samsung","SK_Hynix","Micron","Intel","ASML_customer_total"]} w={170}/>
+            <F label="Capex $B" value={capF.capex_usd_b} onChange={v=>setCapF(f=>({...f,capex_usd_b:v}))} type="number" w={90} placeholder="8.5"/>
+            <F label="YoY Growth %" value={capF.capex_growth_yoy} onChange={v=>setCapF(f=>({...f,capex_growth_yoy:v}))} type="number" w={110} placeholder="+35"/>
+            <F label="Primary Use" value={capF.primary_use} onChange={v=>setCapF(f=>({...f,primary_use:v}))} options={["EUV_ramp","DRAM_HBM","Logic_advanced","NAND","Legacy_DUV","Mixed"]} w={160}/>
+            <F label="Notes" value={capF.notes} onChange={v=>setCapF(f=>({...f,notes:v}))} w={220} placeholder="optional"/>
+            <Btn onClick={saveCap}/>
+          </div>
+        </FormBox>
+        {Object.entries(byPeriod(capexData)).map(([period,rows])=>(
+          <div key={period} style={{ background:"#070707", border:"1px solid #141414", borderRadius:10, padding:"12px 16px", marginBottom:10 }}>
+            <div style={{ fontSize:11, color:"#555", fontFamily:"monospace", fontWeight:700, marginBottom:10 }}>{period}</div>
+            <div style={{ display:"flex", gap:10, flexWrap:"wrap" }}>
+              {rows.map(r=>(
+                <div key={r.id} style={{ background:"#0a0a0a", borderRadius:7, padding:"8px 12px", minWidth:170 }}>
+                  <div style={{ fontSize:12, fontFamily:"monospace", fontWeight:700, color:"#e0e0e0" }}>{r.company.replace(/_/g," ")}</div>
+                  <div style={{ fontSize:9, color:"#333", marginTop:2 }}>{r.primary_use?.replace(/_/g," ")}</div>
+                  {r.capex_usd_b && <div style={{ fontFamily:"monospace", fontSize:15, fontWeight:700, color:"#888", marginTop:4 }}>${r.capex_usd_b}B</div>}
+                  {r.capex_growth_yoy!=null && <div style={{ fontFamily:"monospace", fontSize:12, color:r.capex_growth_yoy>0?"#00e5a0":"#ff6b6b" }}>{r.capex_growth_yoy>0?"+":""}{r.capex_growth_yoy}% YoY</div>}
+                  {r.notes && <div style={{ fontSize:9, color:"#2a2a2a", marginTop:3 }}>{r.notes}</div>}
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
+        {capexData.length===0 && <div style={{ color:"#2a2a2a", fontFamily:"monospace", textAlign:"center", padding:40 }}>No capex data yet</div>}
+      </>}
+
+      {/* ── ASML TOOL PLAN ──────────────────────────────────────────────────── */}
+      {section==="tools" && <>
+        <FormBox title="🔧 ASML Tool Shipment Plan — quarterly (DUV / NXE / EXE)">
+          <div style={{ display:"flex", gap:12, flexWrap:"wrap", alignItems:"flex-end" }}>
+            <F label="Period (e.g. Q2-2026)" value={toolF.period} onChange={v=>setToolF(f=>({...f,period:v}))} w={150} placeholder="Q2-2026"/>
+            <F label="Tool Type" value={toolF.tool_type} onChange={v=>setToolF(f=>({...f,tool_type:v}))} options={["DUV","NXE_low_NA","NXE_high_NA","EXE"]} w={140}/>
+            <F label="Units Planned" value={toolF.units_plan} onChange={v=>setToolF(f=>({...f,units_plan:v}))} type="number" w={110} placeholder="12"/>
+            <F label="ASP €M (auto-filled)" value={toolF.asp_eur_m} onChange={v=>setToolF(f=>({...f,asp_eur_m:v}))} type="number" w={120}/>
+            <div style={{ display:"flex", flexDirection:"column", gap:4 }}>
+              <span style={{ fontSize:9, color:"#444", textTransform:"uppercase" }}>Implied Rev</span>
+              <div style={{ fontFamily:"monospace", fontSize:15, fontWeight:700, color:"#00e5a0", padding:"6px 10px", background:"#0a0a0a", borderRadius:6, minWidth:100, border:"1px solid #1a1a1a" }}>
+                €{((parseFloat(toolF.units_plan)||0)*(parseFloat(toolF.asp_eur_m)||0)).toFixed(0)}M
+              </div>
+            </div>
+            <F label="Notes" value={toolF.notes} onChange={v=>setToolF(f=>({...f,notes:v}))} w={200} placeholder="optional"/>
+            <Btn onClick={saveTool}/>
+          </div>
+          <div style={{ marginTop:10, fontSize:10, color:"#2a2a2a" }}>
+            ASP reference: DUV €45M · NXE low-NA €230M · NXE high-NA €380M · EXE €380M — override if your data differs
+          </div>
+        </FormBox>
+        {Object.entries(byPeriod(toolData)).map(([period,rows])=>{
+          const total=rows.reduce((s,r)=>s+(r.implied_rev_eur_m||r.units_plan*r.asp_eur_m||0),0);
+          return (
+            <div key={period} style={{ background:"#070707", border:"1px solid #141414", borderRadius:10, padding:"12px 16px", marginBottom:10 }}>
+              <div style={{ display:"flex", justifyContent:"space-between", marginBottom:10 }}>
+                <span style={{ fontSize:11, color:"#555", fontFamily:"monospace", fontWeight:700 }}>{period}</span>
+                <span style={{ fontFamily:"monospace", fontSize:13, fontWeight:700, color:"#00e5a0" }}>€{total.toFixed(0)}M tool revenue implied</span>
+              </div>
+              <div style={{ display:"flex", gap:10, flexWrap:"wrap" }}>
+                {rows.map(r=>{
+                  const rev=r.implied_rev_eur_m||(r.units_plan*r.asp_eur_m)||0;
+                  const isHigh=r.tool_type==="EXE"||r.tool_type==="NXE_high_NA";
+                  return (
+                    <div key={r.id} style={{ background:"#0a0a0a", borderRadius:7, padding:"10px 14px", minWidth:160, border:`1px solid ${isHigh?"#f5c84222":"#141414"}` }}>
+                      <div style={{ fontSize:12, fontFamily:"monospace", fontWeight:700, color:isHigh?"#f5c842":"#888" }}>{r.tool_type.replace(/_/g," ")}</div>
+                      <div style={{ fontFamily:"monospace", fontSize:18, fontWeight:700, color:"#e0e0e0", marginTop:4 }}>{r.units_plan} units</div>
+                      <div style={{ fontFamily:"monospace", fontSize:13, color:"#00e5a0" }}>€{rev.toFixed(0)}M</div>
+                      <div style={{ fontSize:9, color:"#2a2a2a", marginTop:2 }}>@ €{r.asp_eur_m}M/unit</div>
+                      {r.notes && <div style={{ fontSize:9, color:"#444", marginTop:4, fontStyle:"italic" }}>{r.notes}</div>}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          );
+        })}
+        {toolData.length===0 && <div style={{ color:"#2a2a2a", fontFamily:"monospace", textAlign:"center", padding:40 }}>No tool plan data yet</div>}
+      </>}
+
+      {/* ── ASML REVENUE CALC ───────────────────────────────────────────────── */}
+      {section==="calc" && <>
+        <div style={{ background:"#070707", border:"1px solid #00e5a022", borderRadius:10, padding:"16px 20px", marginBottom:16 }}>
+          <div style={{ fontSize:10, color:"#00e5a0", fontWeight:700, textTransform:"uppercase", letterSpacing:1, marginBottom:8 }}>
+            📐 ASML Implied Revenue — from your tool shipment intel
+          </div>
+          <div style={{ fontSize:11, color:"#444", lineHeight:1.8 }}>
+            Tool revenue + 28% installed base × 53% gross margin → implied EPS.
+            Then go to Growth Signals and enter the resulting implied growth vs consensus.
+          </div>
+        </div>
+        {Object.keys(asmlQ).length===0
+          ? <div style={{ color:"#2a2a2a", fontFamily:"monospace", textAlign:"center", padding:40 }}>Enter tool plan data first in the Tool Plan section</div>
+          : Object.values(asmlQ).map(q=>{
+              const ib=q.total*0.28;
+              const qRev=q.total+ib;
+              const aRev=qRev*4;
+              const aGP=aRev*0.53;
+              const netInc=aGP*0.83*0.83; // EBIT conv × net margin
+              const eps=netInc/405; // ~405M diluted shares
+              return (
+                <div key={q.period} style={{ background:"#070707", border:"1px solid #1a1a1a", borderRadius:10, padding:"16px", marginBottom:12 }}>
+                  <div style={{ fontFamily:"monospace", fontSize:13, color:"#555", fontWeight:700, marginBottom:12 }}>{q.period}</div>
+                  <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(170px, 1fr))", gap:10, marginBottom:12 }}>
+                    <Card label="Tool revenue (quarterly)" value={`€${q.total.toFixed(0)}M`} color="#888"/>
+                    <Card label="+ Installed base (~28%)" value={`€${ib.toFixed(0)}M`} color="#555"/>
+                    <Card label="= Quarterly total" value={`€${qRev.toFixed(0)}M`} color="#e0e0e0"/>
+                    <Card label="Annualised" value={`€${(aRev/1000).toFixed(1)}B`} color="#f5c842" sub="×4 quarters"/>
+                    <Card label="Gross profit (53%)" value={`€${(aGP/1000).toFixed(1)}B`} color="#888"/>
+                    <Card label="Implied EPS/yr" value={`€${eps.toFixed(0)}`} color={eps>30?"#00e5a0":"#f5c842"} sub="÷ 405M shares"/>
+                  </div>
+                  {/* Tool breakdown */}
+                  <div style={{ display:"flex", gap:8, flexWrap:"wrap", marginBottom:10 }}>
+                    {q.items.map(b=>(
+                      <div key={b.type} style={{ fontSize:10, color:"#444", background:"#0a0a0a", borderRadius:5, padding:"4px 10px", fontFamily:"monospace" }}>
+                        {b.type.replace(/_/g," ")}: {b.units}u × €{b.asp}M = <span style={{ color:"#00e5a0" }}>€{b.rev.toFixed(0)}M</span>
+                      </div>
+                    ))}
+                  </div>
+                  <div style={{ fontSize:10, color:"#2a2a2a", lineHeight:1.6 }}>
+                    Model: tool rev + 28% installed base × 53% GM × 83% EBIT conversion × 83% net income ratio ÷ 405M shares.
+                    After calculating, enter the implied growth in the Growth Signals tab to feed into the Valuation model.
+                  </div>
+                </div>
+              );
+            })
+        }
+      </>}
+    </div>
+  );
+}
+
 function MarktTab() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -2348,11 +2681,12 @@ export default function App() {
   };
 
   const TABS = [
-    { id: "markt",     label: "Market",    icon: "chart" },
+    { id: "markt",     label: "Market",     icon: "chart" },
     { id: "shortlist", label: `Shortlist${shortlist.length ? ` (${shortlist.length})` : ""}`, icon: "star" },
-    { id: "portfolio", label: "Portfolio", icon: "briefcase" },
-    { id: "valuation", label: "Valuation", icon: "chart" },
-    { id: "peg",       label: "PEG Chart", icon: "chart" },
+    { id: "portfolio", label: "Portfolio",  icon: "briefcase" },
+    { id: "valuation", label: "Valuation",  icon: "chart" },
+    { id: "intel",     label: "⚡ Edge Intel", icon: "chart" },
+    { id: "peg",       label: "PEG Chart",  icon: "chart" },
   ];
 
   return (
@@ -2399,6 +2733,7 @@ export default function App() {
                 {tab === "shortlist" && "Entry Timing Dashboard"}
                 {tab === "portfolio" && "Portfolio"}
                 {tab === "valuation" && "Valuation"}
+                {tab === "intel" && "⚡ Edge Intel"}
                 {tab === "peg" && "PEG History"}
               </h1>
               <p style={{ color: "#2a2a2a", fontSize: 12, marginTop: 3 }}>
@@ -2406,6 +2741,7 @@ export default function App() {
                 {tab === "shortlist" && "52-week position · analyst targets · entry signal per stock"}
                 {tab === "portfolio" && "Live P&L · positions synced with Supabase"}
                 {tab === "valuation" && "Fair value bands · price vs projected EPS × PE multiple"}
+                {tab === "intel" && "Semicon market intel · ASML tool plan · capex by company · growth signals"}
                 {tab === "peg" && "PEG trend · grows with every scan"}
               </p>
             </div>
@@ -2420,6 +2756,9 @@ export default function App() {
             </div>
             <div style={{ display: tab === "valuation" ? "block" : "none" }}>
               <ValuationTab positions={positions} shortlist={shortlist}/>
+            </div>
+            <div style={{ display: tab === "intel" ? "block" : "none" }}>
+              <EdgeIntelTab/>
             </div>
             <div style={{ display: tab === "peg" ? "block" : "none" }}>
               <PEGChartTab portfolioSymbols={positions.map(p => p.symbol)}/>
