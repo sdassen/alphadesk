@@ -1182,7 +1182,7 @@ Return ONLY valid JSON:
   return (
     <div>
       {/* Summary cards */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 10, marginBottom: 22 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 14 }}>
         {[["Value", `$${totalValue.toFixed(0)}`, totalValue >= totalCost ? "#00e5a0" : "#ff6b6b"],
           ["Cost Basis", `$${totalCost.toFixed(0)}`, "#555"],
           ["P&L", `${pnl >= 0 ? "+" : ""}$${pnl.toFixed(0)}`, pnl >= 0 ? "#00e5a0" : "#ff6b6b"],
@@ -1263,20 +1263,19 @@ Return ONLY valid JSON:
               const price = q?.price;
               const newWeight = totalValue > 0 ? (((positions.find(p => p.symbol === a.symbol)?.shares || 0) * (price || 0) + a.amount) / (totalValue + parseFloat(cashAmount))) * 100 : 0;
               return (
-                <div key={i} style={{ display: "grid", gridTemplateColumns: "80px 100px 100px 1fr 80px", alignItems: "center", gap: 12, background: "#0a0a0a", borderRadius: 8, padding: "12px 16px", border: `1px solid ${a.conviction === "high" ? "#00e5a033" : "#1a1a1a"}` }}>
-                  <div style={{ fontFamily: "monospace", fontWeight: 700, fontSize: 15, color: "#fff" }}>{a.symbol}</div>
-                  <div>
-                    <div style={{ fontFamily: "monospace", fontWeight: 700, color: "#00e5a0", fontSize: 14 }}>${a.amount?.toLocaleString()}</div>
-                    <div style={{ fontSize: 10, color: "#444", marginTop: 2 }}>{a.shares} shares @ {price ? `$${price.toFixed(2)}` : "—"}</div>
+                <div key={i} style={{ background: "#0a0a0a", borderRadius: 8, padding: "12px 14px", border: `1px solid ${a.conviction === "high" ? "#00e5a033" : "#1a1a1a"}` }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                    <span style={{ fontFamily: "monospace", fontWeight: 700, fontSize: 15, color: "#fff" }}>{a.symbol}</span>
+                    <div style={{ textAlign: "right" }}>
+                      <span style={{ fontFamily: "monospace", fontWeight: 700, color: "#00e5a0", fontSize: 14 }}>${a.amount?.toLocaleString()}</span>
+                      <span style={{ fontSize: 10, fontWeight: 700, color: a.conviction === "high" ? "#00e5a0" : "#f5c842", textTransform: "uppercase", marginLeft: 8 }}>{a.conviction}</span>
+                    </div>
                   </div>
-                  <div>
-                    <div style={{ fontSize: 10, color: "#444", marginBottom: 2 }}>New weight</div>
-                    <div style={{ fontFamily: "monospace", fontSize: 13, color: "#888" }}>{newWeight.toFixed(1)}%</div>
+                  <div style={{ display: "flex", gap: 10, marginBottom: 6, flexWrap: "wrap" }}>
+                    <span style={{ fontSize: 11, color: "#444" }}>{a.shares} sh @ {price ? `$${price.toFixed(2)}` : "—"}</span>
+                    <span style={{ fontSize: 11, color: "#444" }}>→ {newWeight.toFixed(1)}% weight</span>
                   </div>
-                  <div style={{ fontSize: 11, color: "#666", lineHeight: 1.5 }}>{a.rationale}</div>
-                  <div style={{ textAlign: "right" }}>
-                    <span style={{ fontSize: 10, fontWeight: 700, color: a.conviction === "high" ? "#00e5a0" : "#f5c842", textTransform: "uppercase" }}>{a.conviction}</span>
-                  </div>
+                  <div style={{ fontSize: 12, color: "#555", lineHeight: 1.5 }}>{a.rationale}</div>
                 </div>
               );
             })}
@@ -1355,11 +1354,11 @@ Return ONLY valid JSON:
       {adding && (
         <div style={{ background: "#070707", border: "1px solid #1e1e1e", borderRadius: 12, padding: 16, marginBottom: 13 }}>
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end" }}>
-            {[["Symbol", "symbol", 85], ["Shares", "shares", 85], ["Avg $", "avgCost", 95], ["Thesis", "thesis", 270]].map(([label, key, w]) => (
-              <div key={key}>
+            {[["Symbol", "symbol", "100px"], ["Shares", "shares", "100px"], ["Avg $", "avgCost", "120px"], ["Thesis", "thesis", "1 1 100%"]].map(([label, key, flex]) => (
+              <div key={key} style={{ flex: flex.includes("%") ? flex : `0 0 ${flex}` }}>
                 <div style={{ fontSize: 10, color: "#444", letterSpacing: 1, textTransform: "uppercase", marginBottom: 4 }}>{label}</div>
                 <input value={form[key]} onChange={e => setForm(p => ({ ...p, [key]: e.target.value }))}
-                  style={{ width: w, background: "#0d0d0d", border: "1px solid #222", borderRadius: 6, color: "#d0d0d0", padding: "7px 11px", fontSize: 13, fontFamily: "monospace" }}/>
+                  style={{ width: "100%", background: "#0d0d0d", border: "1px solid #222", borderRadius: 6, color: "#d0d0d0", padding: "10px 11px", fontSize: 16, fontFamily: "monospace" }}/>
               </div>
             ))}
             <button onClick={add} style={{ background: "#00e5a0", border: "none", borderRadius: 8, color: "#000", padding: "7px 16px", fontWeight: 700, cursor: "pointer" }}>Save</button>
@@ -1391,38 +1390,49 @@ Return ONLY valid JSON:
             ? Math.max(0, Math.min(100, ((price - w52Low) / (w52High - w52Low)) * 100)) : null;
 
           return (
-            <div key={p.symbol} style={{ borderBottom: "1px solid #0c0c0c", transition: "background 0.15s" }}
-              onMouseEnter={e => e.currentTarget.style.background = "#0b0b0b"}
-              onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
-              <div style={{ display: "grid", gridTemplateColumns: "1.5fr 1fr 1fr 1fr 1fr 1fr 1fr 1fr 60px", padding: "12px 20px" }}>
-                <div>
-                  <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                    <span style={{ fontFamily: "monospace", fontWeight: 700, fontSize: 13, color: "#e0e0e0" }}>{p.symbol}</span>
+            <div key={p.symbol} style={{ borderBottom: "1px solid #0c0c0c", padding: "12px 16px" }}>
+              {/* Row 1: Symbol + price + P&L */}
+              <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 6 }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 2 }}>
+                    <span style={{ fontFamily: "monospace", fontWeight: 700, fontSize: 15, color: "#e0e0e0" }}>{p.symbol}</span>
                     {p.assetType === "etf" && <span style={{ fontSize: 9, color: "#555", border: "1px solid #222", borderRadius: 3, padding: "1px 5px" }}>ETF</span>}
                     {curr === "EUR" && <span style={{ fontSize: 9, color: "#444", fontFamily: "monospace" }}>€</span>}
                   </div>
-                  {p.thesis && <div style={{ fontSize: 10, color: "#3a3a3a", marginTop: 2, maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.thesis}</div>}
+                  {p.thesis && <div style={{ fontSize: 11, color: "#2a2a2a", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "90%" }}>{p.thesis}</div>}
                 </div>
-                <div style={{ fontFamily: "monospace", color: "#666", fontSize: 13 }}>{p.shares}</div>
-                <div style={{ fontFamily: "monospace", color: "#666", fontSize: 13 }}>{sym}{p.avgCost.toFixed(2)}</div>
-                <div style={{ fontFamily: "monospace", color: "#d0d0d0", fontSize: 13 }}>{price ? `${sym}${price.toFixed(2)}` : <Spinner/>}</div>
-                <div style={{ fontFamily: "monospace", color: "#888", fontSize: 13 }}>{value ? `${sym}${value.toFixed(0)}` : "—"}</div>
-                <div style={{ fontFamily: "monospace", color: pl >= 0 ? "#00e5a0" : "#ff6b6b", fontSize: 13, fontWeight: 600 }}>{pl ? `${pl >= 0 ? "+" : ""}${sym}${Math.abs(pl).toFixed(0)}` : "—"}</div>
-                <div style={{ fontFamily: "monospace", color: rt >= 0 ? "#00e5a0" : "#ff6b6b", fontSize: 13, fontWeight: 600 }}>{rt ? fmt.pct(rt) : "—"}</div>
-                <div style={{ fontFamily: "monospace", color: "#666", fontSize: 13 }}>{weight ? `${weight.toFixed(1)}%` : "—"}</div>
-                <div style={{ display: "flex", justifyContent: "flex-end" }}>
-                  <button onClick={() => remove(p.symbol)} style={{ background: "#111", border: "1px solid #1e1e1e", borderRadius: 6, color: "#444", padding: "5px 7px", cursor: "pointer" }}><Icon name="trash" size={12}/></button>
+                <div style={{ textAlign: "right", flexShrink: 0 }}>
+                  <div style={{ fontFamily: "monospace", fontSize: 15, fontWeight: 700, color: "#d0d0d0" }}>
+                    {price ? `${sym}${price.toFixed(2)}` : <Spinner/>}
+                  </div>
+                  <div style={{ fontFamily: "monospace", fontSize: 13, fontWeight: 700, color: pl >= 0 ? "#00e5a0" : "#ff6b6b" }}>
+                    {pl ? `${pl >= 0 ? "+" : ""}${sym}${Math.abs(pl).toFixed(0)}` : "—"}
+                    {rt ? <span style={{ fontSize: 11, marginLeft: 4 }}>({fmt.pct(rt)})</span> : null}
+                  </div>
                 </div>
               </div>
+              {/* Row 2: Stats chips */}
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: week52Pct !== null ? 8 : 0 }}>
+                {[
+                  [`${p.shares} sh`, "#555"],
+                  [`avg ${sym}${p.avgCost.toFixed(0)}`, "#444"],
+                  [value ? `val ${sym}${value.toFixed(0)}` : "—", "#555"],
+                  [weight ? `${weight.toFixed(1)}%` : "—", "#444"],
+                ].map(([label, color]) => (
+                  <span key={label} style={{ fontSize: 11, color, fontFamily: "monospace", background: "#0d0d0d", borderRadius: 4, padding: "2px 7px" }}>{label}</span>
+                ))}
+                <button onClick={() => remove(p.symbol)} style={{ marginLeft: "auto", background: "transparent", border: "1px solid #1a1a1a", borderRadius: 5, color: "#333", padding: "2px 8px", cursor: "pointer", fontSize: 11 }}>✕</button>
+              </div>
+              {/* 52W bar */}
               {week52Pct !== null && (
-                <div style={{ padding: "0 20px 10px", display: "flex", alignItems: "center", gap: 8 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                   <span style={{ fontSize: 9, color: "#2a2a2a", fontFamily: "monospace", whiteSpace: "nowrap" }}>52W LOW</span>
-                  <div style={{ flex: 1, height: 3, background: "#111", borderRadius: 2, position: "relative" }}>
+                  <div style={{ flex: 1, height: 4, background: "#111", borderRadius: 2, position: "relative" }}>
                     <div style={{ width: `${week52Pct}%`, height: "100%", background: week52Pct < 30 ? "#00e5a0" : week52Pct < 70 ? "#f5c842" : "#ff6b6b", borderRadius: 2 }}/>
-                    <div style={{ position: "absolute", left: `${week52Pct}%`, top: -2, width: 2, height: 7, background: "#fff", transform: "translateX(-50%)", borderRadius: 1 }}/>
+                    <div style={{ position: "absolute", left: `${week52Pct}%`, top: -2, width: 2, height: 8, background: "#fff", transform: "translateX(-50%)", borderRadius: 1 }}/>
                   </div>
-                  <span style={{ fontSize: 9, color: "#2a2a2a", fontFamily: "monospace", whiteSpace: "nowrap" }}>52W HIGH</span>
-                  <span style={{ fontSize: 9, color: week52Pct < 30 ? "#00e5a0" : week52Pct < 70 ? "#f5c842" : "#ff6b6b", fontFamily: "monospace", whiteSpace: "nowrap" }}>
+                  <span style={{ fontSize: 9, color: "#2a2a2a", fontFamily: "monospace", whiteSpace: "nowrap" }}>HIGH</span>
+                  <span style={{ fontSize: 10, fontWeight: 700, color: week52Pct < 30 ? "#00e5a0" : week52Pct < 70 ? "#f5c842" : "#ff6b6b", fontFamily: "monospace" }}>
                     {week52Pct.toFixed(0)}%{recentSplit ? " ⚠split" : ""}
                   </span>
                 </div>
@@ -1431,13 +1441,7 @@ Return ONLY valid JSON:
           );
         };
 
-        const colHeader = (
-          <div style={{ display: "grid", gridTemplateColumns: "1.5fr 1fr 1fr 1fr 1fr 1fr 1fr 1fr 60px", padding: "10px 20px", borderBottom: "1px solid #141414" }}>
-            {["Position", "Shares", "Avg", "Price", "Value", "P&L", "Return", "Weight", ""].map((h, i) => (
-              <div key={i} style={{ fontSize: 10, color: "#3a3a3a", fontWeight: 700, letterSpacing: 1.2, textTransform: "uppercase", fontFamily: "monospace", textAlign: i === 8 ? "right" : "left" }}>{h}</div>
-            ))}
-          </div>
-        );
+        const colHeader = null;
 
         return (
           <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
