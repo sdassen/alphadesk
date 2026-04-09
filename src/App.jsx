@@ -1565,46 +1565,63 @@ function ValuationTab({ positions, shortlist }) {
                      : epsGrowth3Y ? "60% of 3Y"
                      : "est 8%";
 
-      // ── Historical PE range ───────────────────────────────────────────────
-      // For cyclicals: use forward PE as the reference (more stable than trailing)
-      // Only use trailing PE history when trailing EPS is positive and reasonable
-      const useForwardPEBasis = !trailingPE || trailingPE <= 0 || trailingPE > 150
-        || (forwardPE && trailingPE > forwardPE * 3);
+      // ── Starting EPS: always trailing (realised), never forward ─────────────
+      // KEY INSIGHT: forward EPS is already a growth estimate.
+      // If we start with forward EPS and then apply growth on top, we double-count.
+      // Correct approach: start with trailing (actual) EPS, project forward from there.
+      // The band at t=0 should roughly equal current price when fairly valued.
+      const baseEps = (trailingEps && trailingEps > 0)
+        ? trailingEps
+        : (currentPrice && trailingPE && trailingPE > 0 ? currentPrice / trailingPE  // derive from price
+        : (currentPrice && forwardPE ? currentPrice / forwardPE                        // last resort
+        : null));
 
-      let peBear, peBase, peBull, histPEsCount = 0;
+      // ── PE range: use forward PE as anchor, scale for bear/base/bull ────────
+      // We use FORWARD PE as the multiple basis because:
+      // 1. It's what the market actually prices in (future earnings)
+      // 2. Trailing PE is distorted for cyclicals and export-impacted stocks like ASML
+      // 3. Analyst consensus already bakes in the forward view
+      //
+      // Bear = forward PE × 0.70  (multiple compression in a downturn)
+      // Base = forward PE          (fair value at current consensus)
+      // Bull = forward PE × 1.40  (multiple expansion in a bull cycle)
+      //
+      // We also try historical PE from price history as a sanity check
+      let peBear, peBase, peBull, histPEsCount = 0, useForwardPEBasis = true;
+      const fpe = forwardPE || (currentPrice && baseEps ? currentPrice / baseEps : 20);
 
-      if (useForwardPEBasis || !trailingEps || trailingEps <= 0) {
-        // Forward PE basis — for cyclicals and loss-making companies
-        // Bear = forward PE × 0.65, Base = forward PE, Bull = forward PE × 1.5
-        const fpe = forwardPE || 15;
-        peBear = fpe * 0.65;
-        peBase = fpe;
-        peBull = fpe * 1.5;
-      } else {
-        // Reconstruct historical PE from price history + trailing EPS
+      // Try to get historical PE range from price data (using trailing EPS)
+      if (trailingEps && trailingEps > 0) {
         const histPEs = priceHistory
-          .filter(p => p.close && trailingEps > 0)
+          .filter(p => p.close)
           .map(p => p.close / trailingEps)
-          .filter(pe => pe > 0 && pe < 200);
+          .filter(pe => pe > 3 && pe < 300); // filter obvious outliers
         histPEs.sort((a, b) => a - b);
         histPEsCount = histPEs.length;
 
-        if (histPEs.length > 8) {
-          peBear = histPEs[Math.floor(histPEs.length * 0.15)];
-          peBase = histPEs[Math.floor(histPEs.length * 0.50)];
-          peBull = histPEs[Math.floor(histPEs.length * 0.85)];
-        } else {
-          // Fallback to forward PE based approach
-          const fpe = forwardPE || trailingPE || 15;
-          peBear = fpe * 0.65;
-          peBase = fpe;
-          peBull = fpe * 1.5;
+        if (histPEs.length > 20) {
+          // Use historical range but anchor base to forward PE for realism
+          const histP15 = histPEs[Math.floor(histPEs.length * 0.15)];
+          const histP50 = histPEs[Math.floor(histPEs.length * 0.50)];
+          const histP85 = histPEs[Math.floor(histPEs.length * 0.85)];
+
+          // Blend: weight forward PE 60%, historical 40% for base
+          // This prevents 1-year distortions from dominating
+          peBase = fpe * 0.60 + histP50 * 0.40;
+          // Bear/bull: use historical spread around the blended base
+          const spread = (histP85 - histP15) / 2;
+          peBear = Math.max(fpe * 0.55, peBase - spread);
+          peBull = Math.min(fpe * 1.60, peBase + spread);
+          useForwardPEBasis = false;
         }
       }
 
-      // Starting EPS — always prefer forward EPS for projection
-      const baseEps = forwardEps || (trailingEps && trailingEps > 0 ? trailingEps : null)
-        || (currentPrice && forwardPE ? currentPrice / forwardPE : null);
+      // Fallback: purely forward PE based
+      if (useForwardPEBasis) {
+        peBase = fpe;
+        peBear = fpe * 0.70;
+        peBull = fpe * 1.40;
+      }
 
       // ── Build bands ───────────────────────────────────────────────────────
       const bands = [];
@@ -1638,6 +1655,8 @@ function ValuationTab({ positions, shortlist }) {
       setData({
         symbol, currentPrice,
         trailingEps, forwardEps, baseEps,
+        baseEpsSource: (trailingEps && trailingEps > 0) ? "trailing EPS"
+          : (trailingPE ? "price÷trailing PE" : "price÷forward PE"),
         g1Auto, g2Auto, g1Source, g2Source, g1Capped, rawG1,
         peBear, peBase, peBull,
         useForwardPEBasis, histPEsCount,
@@ -1888,7 +1907,7 @@ function ValuationTab({ positions, shortlist }) {
               ["Phase 1 Growth",`${(effectiveG1*100).toFixed(1)}%/yr${data.g1Capped && !customG1 ? " ⚠" : ""}`, customG1 ? "#f5c842" : data.g1Capped ? "#f5c842" : "#888"],
               ["Phase 2 Growth",`${(effectiveG2*100).toFixed(1)}%/yr`,  customG2 ? "#f5c842" : "#555"],
               ["Base PE",       `${effectivePEBase.toFixed(0)}×`,        customPE ? "#f5c842" : "#888"],
-              ["Fwd EPS",       data.forwardEps ? `$${data.forwardEps.toFixed(2)}` : "—", "#888"],
+              ["Base EPS", data.baseEps ? `$${data.baseEps.toFixed(2)} (${data.baseEpsSource})` : "—", "#888"],
               [upsideToBase != null ? `${growthYears}Y Upside (base)` : "Analyst Target",
                upsideToBase != null ? `${upsideToBase >= 0 ? "+" : ""}${upsideToBase.toFixed(0)}%`
                                     : (data.targetMean ? `$${data.targetMean.toFixed(0)}` : "—"),
@@ -2020,7 +2039,7 @@ function ValuationTab({ positions, shortlist }) {
                 {[
                   ["Phase 1", `${(effectiveG1*100).toFixed(1)}%/yr`, data.g1Source, customG1 ? "#f5c842" : "#888"],
                   ["Phase 2", `${(effectiveG2*100).toFixed(1)}%/yr`, data.g2Source, customG2 ? "#f5c842" : "#555"],
-                  ["Base EPS", data.baseEps ? `$${data.baseEps.toFixed(2)}` : "—", data.forwardEps ? "forward" : "trailing", "#888"],
+                  ["Base EPS", data.baseEps ? `$${data.baseEps.toFixed(2)}` : "—", data.baseEpsSource || "trailing", "#888"],
                   ["PE basis", `${data.peBear.toFixed(0)}–${data.peBase.toFixed(0)}–${data.peBull.toFixed(0)}×`, data.useForwardPEBasis ? "fwd PE" : `${data.histPEsCount} pts`, "#555"],
                 ].map(([label, val, source, color]) => (
                   <div key={label} style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
