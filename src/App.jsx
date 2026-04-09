@@ -271,6 +271,16 @@ const db = {
   },
   async deletePortfolio(symbol) { await SB.from("portfolio").delete().eq("symbol", symbol); },
 
+  async getValuationConfig(symbol) {
+    // Try symbol-specific first, then DEFAULT
+    const { data } = await SB.from("valuation_config")
+      .select("*")
+      .in("symbol", [symbol, "DEFAULT"])
+      .order("symbol", { ascending: true }); // DEFAULT sorts before symbol names alphabetically... use case
+    if (!data?.length) return null;
+    return data.find(r => r.symbol === symbol) || data.find(r => r.symbol === "DEFAULT") || null;
+  },
+
   async getGrowthForecast(symbol) {
     // Look up custom forecast: symbol-specific first, then sector, then null (global)
     const { data } = await SB.from("growth_forecasts")
@@ -1503,12 +1513,13 @@ function ValuationTab({ positions, shortlist }) {
     setLoading(true);
     setData(null);
     try {
-      const [priceHistory, fhRaw, yahooRaw, customForecast] = await Promise.all([
+      const [priceHistory, fhRaw, yahooRaw, customForecast, symConfig] = await Promise.all([
         fetchHistoricalPrices(symbol, 365),
         fetchFinnhub(symbol),
         fetch(`/api/yahoo?symbol=${symbol}&endpoint=quoteSummary&modules=defaultKeyStatistics,summaryDetail,financialData`)
           .then(r => r.json()),
         db.getGrowthForecast(symbol),
+        db.getValuationConfig(symbol),
       ]);
       setForecast(customForecast);
 
@@ -1535,49 +1546,40 @@ function ValuationTab({ positions, shortlist }) {
       const epsGrowth5Y = fh?.epsGrowth5Y ? fh.epsGrowth5Y / 100 : null;
       const revGrowth3Y = fh?.revenueGrowth3Y ? fh.revenueGrowth3Y / 100 : null;
 
-      // ── Growth rate selection — prioritise quality over recency ────────────
-      // Sources in order of reliability for phase 1 (near-term):
-      // 1. Finnhub 3Y EPS CAGR — realized multi-year, smooths base effects
-      // 2. Yahoo TTM earningsGrowth — last 12 months actual YoY
-      // 3. fwdGrowth1Y — ONLY if reasonable vs TTM (not a base-effect artifact)
-      // 4. Revenue growth as fallback
-      //
-      // fwdGrowth1Y is EXCLUDED as primary when it is >2× the TTM growth
-      // (this catches base-effect distortions like META 2022→2023 recovery)
-      const ttmGrowthRate = fd.earningsGrowth?.raw || null; // Yahoo TTM YoY
-      const fwdSanityCheck = ttmGrowthRate && ttmGrowthRate > 0 && fwdGrowth1Y
-        ? fwdGrowth1Y <= ttmGrowthRate * 2.5  // forward within 2.5× of TTM = plausible
-        : true; // no TTM to compare against, allow forward
+      // ── Config-driven growth + PE selection ─────────────────────────────────
+      // symConfig from Supabase valuation_config table — per-symbol settings
+      // customForecast (manual override) always wins over config
+      const cfg = symConfig || {
+        g1_source: 'finnhub_5y', g1_cap: 30, g2_default: 10,
+        pe_method: 'forward', pe_bear_mult: 0.70, pe_base_mult: 1.00, pe_bull_mult: 1.40,
+      };
+      const ttmGrowthRate = fd.earningsGrowth?.raw || null;
 
-      const G1_CAP = 0.40;
-
-      // Build candidate list in priority order
+      // Pick growth source based on config
       let rawG1, g1Source;
-      if (epsGrowth3Y && epsGrowth3Y > 0) {
-        rawG1 = epsGrowth3Y;
-        g1Source = "Finnhub 3Y CAGR";
-      } else if (ttmGrowthRate && ttmGrowthRate > 0) {
-        rawG1 = ttmGrowthRate;
-        g1Source = "Yahoo TTM";
-      } else if (fwdGrowth1Y && fwdGrowth1Y > 0 && fwdSanityCheck) {
-        rawG1 = fwdGrowth1Y;
-        g1Source = "analyst fwd 1Y";
-      } else if (fwdGrowth1Y && fwdGrowth1Y > 0) {
-        // Forward available but failed sanity check — use capped version
-        rawG1 = ttmGrowthRate ?? epsGrowth5Y ?? revGrowth3Y ?? 0.12;
-        g1Source = `fwd ${(fwdGrowth1Y*100).toFixed(0)}% adj→TTM (base effect)`;
-      } else if (epsGrowth5Y && epsGrowth5Y > 0) {
-        rawG1 = epsGrowth5Y;
-        g1Source = "Finnhub 5Y CAGR";
-      } else if (revGrowth3Y && revGrowth3Y > 0) {
-        rawG1 = revGrowth3Y;
-        g1Source = "rev 3Y~";
+      const G1_CAP = (cfg.g1_cap || 30) / 100;
+
+      if (cfg.g1_source === 'finnhub_5y' && epsGrowth5Y && epsGrowth5Y > 0) {
+        rawG1 = epsGrowth5Y; g1Source = `Finnhub 5Y CAGR (${cfg.stock_type})`;
+      } else if (cfg.g1_source === 'finnhub_3y' && epsGrowth3Y && epsGrowth3Y > 0) {
+        rawG1 = epsGrowth3Y; g1Source = `Finnhub 3Y CAGR (${cfg.stock_type})`;
+      } else if (cfg.g1_source === 'ttm' && ttmGrowthRate && ttmGrowthRate > 0) {
+        rawG1 = ttmGrowthRate; g1Source = `Yahoo TTM (${cfg.stock_type})`;
       } else {
-        rawG1 = 0.12;
-        g1Source = "est 12%";
+        // Fallback cascade: 5Y → 3Y → TTM → fwd → rev → est
+        rawG1 = (epsGrowth5Y && epsGrowth5Y > 0) ? epsGrowth5Y
+              : (epsGrowth3Y && epsGrowth3Y > 0) ? epsGrowth3Y
+              : (ttmGrowthRate && ttmGrowthRate > 0) ? ttmGrowthRate
+              : (fwdGrowth1Y && fwdGrowth1Y > 0) ? fwdGrowth1Y
+              : (revGrowth3Y && revGrowth3Y > 0) ? revGrowth3Y
+              : 0.10;
+        g1Source = (epsGrowth5Y > 0) ? "Finnhub 5Y fallback"
+                 : (epsGrowth3Y > 0) ? "Finnhub 3Y fallback"
+                 : (ttmGrowthRate > 0) ? "Yahoo TTM fallback"
+                 : "est 10%";
       }
 
-      // Custom forecast from DB takes priority
+      // Manual forecast overrides everything
       const forecastG1 = customForecast?.g1_pct ? customForecast.g1_pct / 100 : null;
       const forecastG2 = customForecast?.g2_pct ? customForecast.g2_pct / 100 : null;
 
@@ -1585,71 +1587,38 @@ function ValuationTab({ positions, shortlist }) {
       const g1Capped = !forecastG1 && rawG1 > G1_CAP;
       if (forecastG1) g1Source = customForecast.source;
 
-      const g2Auto = forecastG2 ?? Math.min(0.15, Math.max(0.05,
-        epsGrowth5Y ?? (epsGrowth3Y ? epsGrowth3Y * 0.6 : 0.08)
+      const g2Auto = forecastG2 ?? Math.min(0.18, Math.max(0.05,
+        (cfg.g2_default ? cfg.g2_default / 100 : null)
+        ?? epsGrowth5Y ?? (epsGrowth3Y ? epsGrowth3Y * 0.55 : 0.08)
       ));
       const g2Source = forecastG2  ? customForecast.source
+                     : cfg.g2_default ? `${cfg.stock_type} default`
                      : epsGrowth5Y ? "Finnhub 5Y"
-                     : epsGrowth3Y ? "60% of 3Y"
-                     : "est 8%";
+                     : "est";
 
-      // ── Starting EPS: always trailing (realised), never forward ─────────────
-      // KEY INSIGHT: forward EPS is already a growth estimate.
-      // If we start with forward EPS and then apply growth on top, we double-count.
-      // Correct approach: start with trailing (actual) EPS, project forward from there.
-      // The band at t=0 should roughly equal current price when fairly valued.
+      // ── Starting EPS: trailing (realised) — no double-counting ─────────────
       const baseEps = (trailingEps && trailingEps > 0)
         ? trailingEps
-        : (currentPrice && trailingPE && trailingPE > 0 ? currentPrice / trailingPE  // derive from price
-        : (currentPrice && forwardPE ? currentPrice / forwardPE                        // last resort
+        : (currentPrice && trailingPE && trailingPE > 0 ? currentPrice / trailingPE
+        : (currentPrice && forwardPE ? currentPrice / forwardPE
         : null));
 
-      // ── PE range: use forward PE as anchor, scale for bear/base/bull ────────
-      // We use FORWARD PE as the multiple basis because:
-      // 1. It's what the market actually prices in (future earnings)
-      // 2. Trailing PE is distorted for cyclicals and export-impacted stocks like ASML
-      // 3. Analyst consensus already bakes in the forward view
-      //
-      // Bear = forward PE × 0.70  (multiple compression in a downturn)
-      // Base = forward PE          (fair value at current consensus)
-      // Bull = forward PE × 1.40  (multiple expansion in a bull cycle)
-      //
-      // We also try historical PE from price history as a sanity check
-      let peBear, peBase, peBull, histPEsCount = 0, useForwardPEBasis = true;
-      const fpe = forwardPE || (currentPrice && baseEps ? currentPrice / baseEps : 20);
-
-      // Try to get historical PE range from price data (using trailing EPS)
-      if (trailingEps && trailingEps > 0) {
-        const histPEs = priceHistory
-          .filter(p => p.close)
-          .map(p => p.close / trailingEps)
-          .filter(pe => pe > 3 && pe < 300); // filter obvious outliers
-        histPEs.sort((a, b) => a - b);
-        histPEsCount = histPEs.length;
-
-        if (histPEs.length > 20) {
-          // Use historical range but anchor base to forward PE for realism
-          const histP15 = histPEs[Math.floor(histPEs.length * 0.15)];
-          const histP50 = histPEs[Math.floor(histPEs.length * 0.50)];
-          const histP85 = histPEs[Math.floor(histPEs.length * 0.85)];
-
-          // Blend: weight forward PE 60%, historical 40% for base
-          // This prevents 1-year distortions from dominating
-          peBase = fpe * 0.60 + histP50 * 0.40;
-          // Bear/bull: use historical spread around the blended base
-          const spread = (histP85 - histP15) / 2;
-          peBear = Math.max(fpe * 0.55, peBase - spread);
-          peBull = Math.min(fpe * 1.60, peBase + spread);
-          useForwardPEBasis = false;
-        }
+      // ── PE range: config-driven multipliers on the anchor PE ─────────────
+      // Anchor PE: forward (most stocks) or trailing (banks/mature)
+      let anchorPE, useForwardPEBasis = true, histPEsCount = 0;
+      if (cfg.pe_method === 'trailing' && trailingPE && trailingPE > 0 && trailingPE < 80) {
+        anchorPE = trailingPE;
+        useForwardPEBasis = false;
+      } else if (cfg.pe_method === 'blend' && forwardPE && trailingPE && trailingPE < 100) {
+        anchorPE = forwardPE * 0.60 + trailingPE * 0.40;
+      } else {
+        anchorPE = forwardPE || trailingPE || 20;
       }
 
-      // Fallback: purely forward PE based
-      if (useForwardPEBasis) {
-        peBase = fpe;
-        peBear = fpe * 0.70;
-        peBull = fpe * 1.40;
-      }
+      // Apply config multipliers — these encode the expected PE range for this stock type
+      const peBear = anchorPE * (cfg.pe_bear_mult || 0.70);
+      const peBase = anchorPE * (cfg.pe_base_mult || 1.00);
+      const peBull = anchorPE * (cfg.pe_bull_mult || 1.40);
 
       // ── Build bands ───────────────────────────────────────────────────────
       const bands = [];
@@ -1683,6 +1652,8 @@ function ValuationTab({ positions, shortlist }) {
       setData({
         symbol, currentPrice,
         trailingEps, forwardEps, baseEps,
+        stockType: cfg.stock_type || "generic",
+        cfgNote: cfg.note || null,
         baseEpsSource: (trailingEps && trailingEps > 0) ? "trailing EPS"
           : (trailingPE ? "price÷trailing PE" : "price÷forward PE"),
         g1Auto, g2Auto, g1Source, g2Source, g1Capped, rawG1,
@@ -1842,8 +1813,11 @@ function ValuationTab({ positions, shortlist }) {
       {showAssumptions && data && (
         <div style={{ background: "#070707", border: "1px solid #f5c84222", borderRadius: 10, padding: "14px 16px", marginBottom: 16 }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-            <div style={{ fontSize: 10, color: "#f5c842", fontWeight: 700, textTransform: "uppercase", letterSpacing: 1 }}>
-              ✎ Assumptions — leave blank to use auto-detected values
+            <div>
+              <div style={{ fontSize: 10, color: "#f5c842", fontWeight: 700, textTransform: "uppercase", letterSpacing: 1 }}>
+                ✎ Assumptions — {data.stockType || "generic"} model
+              </div>
+              {data.cfgNote && <div style={{ fontSize: 9, color: "#2a2a2a", marginTop: 3 }}>{data.cfgNote}</div>}
             </div>
             {forecast && (
               <div style={{ fontSize: 10, background: "#00e5a011", border: "1px solid #00e5a033", borderRadius: 5, padding: "3px 8px", color: "#00e5a0" }}>
