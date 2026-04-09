@@ -1535,31 +1535,59 @@ function ValuationTab({ positions, shortlist }) {
       const epsGrowth5Y = fh?.epsGrowth5Y ? fh.epsGrowth5Y / 100 : null;
       const revGrowth3Y = fh?.revenueGrowth3Y ? fh.revenueGrowth3Y / 100 : null;
 
-      // ── CYCLICAL GUARD: cap extreme EPS swings ─────────────────────────────
-      const G1_CAP = 0.40; // 40% max from auto-sources — transient cyclical spikes
-      const rawG1 = fwdGrowth1Y ?? epsGrowth3Y ?? epsGrowth5Y ?? revGrowth3Y ?? 0.10;
+      // ── Growth rate selection — prioritise quality over recency ────────────
+      // Sources in order of reliability for phase 1 (near-term):
+      // 1. Finnhub 3Y EPS CAGR — realized multi-year, smooths base effects
+      // 2. Yahoo TTM earningsGrowth — last 12 months actual YoY
+      // 3. fwdGrowth1Y — ONLY if reasonable vs TTM (not a base-effect artifact)
+      // 4. Revenue growth as fallback
+      //
+      // fwdGrowth1Y is EXCLUDED as primary when it is >2× the TTM growth
+      // (this catches base-effect distortions like META 2022→2023 recovery)
+      const ttmGrowthRate = fd.earningsGrowth?.raw || null; // Yahoo TTM YoY
+      const fwdSanityCheck = ttmGrowthRate && ttmGrowthRate > 0 && fwdGrowth1Y
+        ? fwdGrowth1Y <= ttmGrowthRate * 2.5  // forward within 2.5× of TTM = plausible
+        : true; // no TTM to compare against, allow forward
 
-      // Custom forecast from DB takes priority over auto-detected (but user can still override)
+      const G1_CAP = 0.40;
+
+      // Build candidate list in priority order
+      let rawG1, g1Source;
+      if (epsGrowth3Y && epsGrowth3Y > 0) {
+        rawG1 = epsGrowth3Y;
+        g1Source = "Finnhub 3Y CAGR";
+      } else if (ttmGrowthRate && ttmGrowthRate > 0) {
+        rawG1 = ttmGrowthRate;
+        g1Source = "Yahoo TTM";
+      } else if (fwdGrowth1Y && fwdGrowth1Y > 0 && fwdSanityCheck) {
+        rawG1 = fwdGrowth1Y;
+        g1Source = "analyst fwd 1Y";
+      } else if (fwdGrowth1Y && fwdGrowth1Y > 0) {
+        // Forward available but failed sanity check — use capped version
+        rawG1 = ttmGrowthRate ?? epsGrowth5Y ?? revGrowth3Y ?? 0.12;
+        g1Source = `fwd ${(fwdGrowth1Y*100).toFixed(0)}% adj→TTM (base effect)`;
+      } else if (epsGrowth5Y && epsGrowth5Y > 0) {
+        rawG1 = epsGrowth5Y;
+        g1Source = "Finnhub 5Y CAGR";
+      } else if (revGrowth3Y && revGrowth3Y > 0) {
+        rawG1 = revGrowth3Y;
+        g1Source = "rev 3Y~";
+      } else {
+        rawG1 = 0.12;
+        g1Source = "est 12%";
+      }
+
+      // Custom forecast from DB takes priority
       const forecastG1 = customForecast?.g1_pct ? customForecast.g1_pct / 100 : null;
       const forecastG2 = customForecast?.g2_pct ? customForecast.g2_pct / 100 : null;
 
-      // If we have a custom forecast, use it directly (no cap needed — it's intentional)
-      // Otherwise cap the auto-detected value
       const g1Auto = forecastG1 ?? Math.min(rawG1, G1_CAP);
       const g1Capped = !forecastG1 && rawG1 > G1_CAP;
+      if (forecastG1) g1Source = customForecast.source;
 
       const g2Auto = forecastG2 ?? Math.min(0.15, Math.max(0.05,
         epsGrowth5Y ?? (epsGrowth3Y ? epsGrowth3Y * 0.6 : 0.08)
       ));
-
-      const forecastLabel = customForecast
-        ? ` · from "${customForecast.source}"` : "";
-      const g1Source = forecastG1  ? `${customForecast.source}${forecastLabel}`
-                     : fwdGrowth1Y ? (g1Capped ? `analyst fwd (capped from ${(rawG1*100).toFixed(0)}%)` : "analyst fwd 1Y")
-                     : epsGrowth3Y ? "Finnhub 3Y CAGR"
-                     : epsGrowth5Y ? "Finnhub 5Y CAGR"
-                     : revGrowth3Y ? "rev 3Y~"
-                     : "est 10%";
       const g2Source = forecastG2  ? customForecast.source
                      : epsGrowth5Y ? "Finnhub 5Y"
                      : epsGrowth3Y ? "60% of 3Y"
