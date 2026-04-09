@@ -271,6 +271,25 @@ const db = {
   },
   async deletePortfolio(symbol) { await SB.from("portfolio").delete().eq("symbol", symbol); },
 
+  async getGrowthForecast(symbol) {
+    // Look up custom forecast: symbol-specific first, then sector, then null (global)
+    const { data } = await SB.from("growth_forecasts")
+      .select("*")
+      .or(`symbol.eq.${symbol},symbol.is.null`)
+      .or("valid_until.is.null,valid_until.gte." + new Date().toISOString().split("T")[0])
+      .order("symbol", { ascending: false }) // symbol-specific first
+      .order("created_at", { ascending: false });
+    if (!data?.length) return null;
+    // Prefer symbol-specific over sector over global
+    return data.find(r => r.symbol === symbol)
+      || data.find(r => r.sector === "semiconductor")
+      || data[0];
+  },
+  async saveGrowthForecast(symbol, g1_pct, g2_pct, source, note) {
+    await SB.from("growth_forecasts").insert({
+      symbol, g1_pct, g2_pct, source: source || "manual", note: note || null
+    });
+  },
   async getLastRebalance() {
     const { data } = await SB.from("rebalance_log")
       .select("*").eq("type", "rebalance")
@@ -1462,6 +1481,9 @@ function ValuationTab({ positions, shortlist }) {
   const [customG2, setCustomG2]         = useState("");   // terminal growth override
   const [customPE, setCustomPE]         = useState("");   // PE multiple override
   const [showAssumptions, setShowAssumptions] = useState(false);
+  const [forecast, setForecast]               = useState(null);
+  const [showSaveForm, setShowSaveForm]        = useState(false);
+  const [saveNote, setSaveNote]                = useState("");
 
   // All stock symbols from portfolio + shortlist
   const allSymbols = [...new Set([
@@ -1481,12 +1503,14 @@ function ValuationTab({ positions, shortlist }) {
     setLoading(true);
     setData(null);
     try {
-      const [priceHistory, fhRaw, yahooRaw] = await Promise.all([
+      const [priceHistory, fhRaw, yahooRaw, customForecast] = await Promise.all([
         fetchHistoricalPrices(symbol, 365),
         fetchFinnhub(symbol),
         fetch(`/api/yahoo?symbol=${symbol}&endpoint=quoteSummary&modules=defaultKeyStatistics,summaryDetail,financialData`)
           .then(r => r.json()),
+        db.getGrowthForecast(symbol),
       ]);
+      setForecast(customForecast);
 
       const fin = yahooRaw?.quoteSummary?.result?.[0];
       const fd  = fin?.financialData  || {};
@@ -1511,28 +1535,34 @@ function ValuationTab({ positions, shortlist }) {
       const epsGrowth5Y = fh?.epsGrowth5Y ? fh.epsGrowth5Y / 100 : null;
       const revGrowth3Y = fh?.revenueGrowth3Y ? fh.revenueGrowth3Y / 100 : null;
 
-      // ── CYCLICAL GUARD: cap extreme EPS swings ────────────────────────────
-      // Cyclicals (semis, energy, materials) have boom/bust EPS cycles.
-      // 1Y forward growth of 300%+ is a cyclical recovery, not sustainable.
-      // We cap phase 1 at 60% and flag it so the user knows.
-      const G1_CAP = 0.40; // 40% max phase 1 — anything above is flagged as likely transient
+      // ── CYCLICAL GUARD: cap extreme EPS swings ─────────────────────────────
+      const G1_CAP = 0.40; // 40% max from auto-sources — transient cyclical spikes
       const rawG1 = fwdGrowth1Y ?? epsGrowth3Y ?? epsGrowth5Y ?? revGrowth3Y ?? 0.10;
-      const g1Auto = Math.min(rawG1, G1_CAP);
-      const g1Capped = rawG1 > G1_CAP; // flag for UI warning
 
-      // Phase 2 = normalised long-term: max 15%, min 5%
-      // Prefer Finnhub 5Y (includes downturns), else half of 3Y, else 8%
-      const g2Auto = Math.min(0.15, Math.max(0.05,
+      // Custom forecast from DB takes priority over auto-detected (but user can still override)
+      const forecastG1 = customForecast?.g1_pct ? customForecast.g1_pct / 100 : null;
+      const forecastG2 = customForecast?.g2_pct ? customForecast.g2_pct / 100 : null;
+
+      // If we have a custom forecast, use it directly (no cap needed — it's intentional)
+      // Otherwise cap the auto-detected value
+      const g1Auto = forecastG1 ?? Math.min(rawG1, G1_CAP);
+      const g1Capped = !forecastG1 && rawG1 > G1_CAP;
+
+      const g2Auto = forecastG2 ?? Math.min(0.15, Math.max(0.05,
         epsGrowth5Y ?? (epsGrowth3Y ? epsGrowth3Y * 0.6 : 0.08)
       ));
 
-      const g1Source = fwdGrowth1Y  ? (g1Capped ? `analyst fwd 1Y (capped from ${(rawG1*100).toFixed(0)}%)` : "analyst fwd 1Y")
-                     : epsGrowth3Y  ? "Finnhub 3Y CAGR"
-                     : epsGrowth5Y  ? "Finnhub 5Y CAGR"
-                     : revGrowth3Y  ? "rev 3Y~"
+      const forecastLabel = customForecast
+        ? ` · from "${customForecast.source}"` : "";
+      const g1Source = forecastG1  ? `${customForecast.source}${forecastLabel}`
+                     : fwdGrowth1Y ? (g1Capped ? `analyst fwd (capped from ${(rawG1*100).toFixed(0)}%)` : "analyst fwd 1Y")
+                     : epsGrowth3Y ? "Finnhub 3Y CAGR"
+                     : epsGrowth5Y ? "Finnhub 5Y CAGR"
+                     : revGrowth3Y ? "rev 3Y~"
                      : "est 10%";
-      const g2Source = epsGrowth5Y  ? "Finnhub 5Y"
-                     : epsGrowth3Y  ? "60% of 3Y"
+      const g2Source = forecastG2  ? customForecast.source
+                     : epsGrowth5Y ? "Finnhub 5Y"
+                     : epsGrowth3Y ? "60% of 3Y"
                      : "est 8%";
 
       // ── Historical PE range ───────────────────────────────────────────────
@@ -1736,7 +1766,7 @@ function ValuationTab({ positions, shortlist }) {
             ...positions.filter(p => p.assetType !== "etf").map(p => p.symbol),
             ...shortlist.map(s => s.symbol),
           ])].sort().map(sym => (
-            <button key={sym} onClick={() => { setSelected(sym); setCustomG1(""); setCustomG2(""); setCustomPE(""); }}
+            <button key={sym} onClick={() => { setSelected(sym); setCustomG1(""); setCustomG2(""); setCustomPE(""); setShowAssumptions(false); }}
               style={{ background: selected === sym ? "#00e5a022" : "#0a0a0a", border: `1px solid ${selected === sym ? "#00e5a066" : "#1e1e1e"}`, borderRadius: 7, color: selected === sym ? "#00e5a0" : "#555", padding: "6px 12px", cursor: "pointer", fontFamily: "monospace", fontSize: 12, fontWeight: selected === sym ? 700 : 400 }}>
               {sym}
             </button>
@@ -1764,8 +1794,16 @@ function ValuationTab({ positions, shortlist }) {
       {/* ── User assumption overrides ── */}
       {showAssumptions && data && (
         <div style={{ background: "#070707", border: "1px solid #f5c84222", borderRadius: 10, padding: "14px 16px", marginBottom: 16 }}>
-          <div style={{ fontSize: 10, color: "#f5c842", fontWeight: 700, textTransform: "uppercase", letterSpacing: 1, marginBottom: 12 }}>
-            ✎ Override Assumptions — leave blank to use auto-detected values
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+            <div style={{ fontSize: 10, color: "#f5c842", fontWeight: 700, textTransform: "uppercase", letterSpacing: 1 }}>
+              ✎ Assumptions — leave blank to use auto-detected values
+            </div>
+            {forecast && (
+              <div style={{ fontSize: 10, background: "#00e5a011", border: "1px solid #00e5a033", borderRadius: 5, padding: "3px 8px", color: "#00e5a0" }}>
+                ✓ Custom forecast active: {forecast.source}
+                {forecast.note && <span style={{ color: "#444", marginLeft: 6 }}>{forecast.note}</span>}
+              </div>
+            )}
           </div>
           <div style={{ display: "flex", gap: 16, flexWrap: "wrap", alignItems: "flex-end" }}>
             <ValInputField
@@ -1784,10 +1822,55 @@ function ValuationTab({ positions, shortlist }) {
               style={{ background: "transparent", border: "1px solid #2a2a2a", borderRadius: 6, color: "#444", padding: "5px 12px", cursor: "pointer", fontSize: 11, alignSelf: "flex-end" }}>
               Reset
             </button>
+            <button onClick={() => setShowSaveForm(v => !v)}
+              style={{ background: "#00e5a011", border: "1px solid #00e5a033", borderRadius: 6, color: "#00e5a0", padding: "5px 12px", cursor: "pointer", fontSize: 11, alignSelf: "flex-end" }}>
+              💾 Save forecast
+            </button>
           </div>
           <div style={{ marginTop: 10, fontSize: 10, color: "#2a2a2a", lineHeight: 1.6 }}>
             Phase 1 = years 1–{Math.min(growthYears, 3)} · Phase 2 = years {Math.min(growthYears, 3)+1}–{growthYears} (terminal normalisation)
-            {" "}· PE range from {data.histPEsCount} historical data points: {data.histPEMin.toFixed(0)}× – {data.histPEMax.toFixed(0)}×
+            {" "}· PE basis: {data.useForwardPEBasis ? "forward PE (cyclical stock)" : `${data.histPEsCount} historical data points`}
+            {" "}· Bear {data.peBear.toFixed(0)}× / Base {data.peBase.toFixed(0)}× / Bull {data.peBull.toFixed(0)}×
+          </div>
+        </div>
+      )}
+
+      {/* Save forecast form */}
+      {showSaveForm && showAssumptions && (
+        <div style={{ background: "#070707", border: "1px solid #00e5a022", borderRadius: 10, padding: "14px 16px", marginBottom: 12 }}>
+          <div style={{ fontSize: 10, color: "#00e5a0", fontWeight: 700, textTransform: "uppercase", letterSpacing: 1, marginBottom: 10 }}>
+            💾 Save as named forecast for {selected}
+          </div>
+          <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "flex-end" }}>
+            <div>
+              <div style={{ fontSize: 9, color: "#555", textTransform: "uppercase", letterSpacing: 0.8, marginBottom: 4 }}>Source / name</div>
+              <input value={saveNote} onChange={e => setSaveNote(e.target.value)}
+                placeholder={`e.g. "ASML internal Q1 2026"`}
+                style={{ width: 220, background: "#0d0d0d", border: "1px solid #222", borderRadius: 6, color: "#d0d0d0", fontFamily: "monospace", fontSize: 12, padding: "5px 10px", outline: "none" }}/>
+            </div>
+            <div style={{ fontSize: 10, color: "#444" }}>
+              Phase 1: {customG1 || (data.g1Auto * 100).toFixed(1)}%
+              {" "}· Phase 2: {customG2 || (data.g2Auto * 100).toFixed(1)}%
+            </div>
+            <button onClick={async () => {
+              const g1 = parseFloat(customG1) || data.g1Auto * 100;
+              const g2 = parseFloat(customG2) || data.g2Auto * 100;
+              await db.saveGrowthForecast(selected, g1, g2, saveNote || "manual", null);
+              const updated = await db.getGrowthForecast(selected);
+              setForecast(updated);
+              setShowSaveForm(false);
+              setSaveNote("");
+            }} style={{ background: "#00e5a0", border: "none", borderRadius: 6, color: "#000", padding: "5px 14px", cursor: "pointer", fontSize: 11, fontWeight: 700 }}>
+              Save
+            </button>
+            <button onClick={() => setShowSaveForm(false)}
+              style={{ background: "transparent", border: "1px solid #1e1e1e", borderRadius: 6, color: "#444", padding: "5px 10px", cursor: "pointer", fontSize: 11 }}>
+              Cancel
+            </button>
+          </div>
+          <div style={{ marginTop: 8, fontSize: 10, color: "#2a2a2a" }}>
+            Saved forecasts persist across sessions and override auto-detected growth rates.
+            You can also insert directly via Supabase: table "growth_forecasts".
           </div>
         </div>
       )}
@@ -1938,7 +2021,7 @@ function ValuationTab({ positions, shortlist }) {
                   ["Phase 1", `${(effectiveG1*100).toFixed(1)}%/yr`, data.g1Source, customG1 ? "#f5c842" : "#888"],
                   ["Phase 2", `${(effectiveG2*100).toFixed(1)}%/yr`, data.g2Source, customG2 ? "#f5c842" : "#555"],
                   ["Base EPS", data.baseEps ? `$${data.baseEps.toFixed(2)}` : "—", data.forwardEps ? "forward" : "trailing", "#888"],
-                  ["PE basis", data.useForwardPEBasis ? `fwd ${data.peBase.toFixed(0)}× (±range)` : `${data.peBear.toFixed(0)}–${data.peBull.toFixed(0)}×`, data.useForwardPEBasis ? "fwd PE (cyclical)" : `${data.histPEsCount} hist pts`, "#555"],
+                  ["PE basis", `${data.peBear.toFixed(0)}–${data.peBase.toFixed(0)}–${data.peBull.toFixed(0)}×`, data.useForwardPEBasis ? "fwd PE" : `${data.histPEsCount} pts`, "#555"],
                 ].map(([label, val, source, color]) => (
                   <div key={label} style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
                     <span style={{ fontSize: 10, color: "#333" }}>{label}</span>
