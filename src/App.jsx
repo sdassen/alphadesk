@@ -2152,29 +2152,30 @@ function EdgeIntelTab() {
   const sColor = { bullish:"#00e5a0", neutral:"#f5c842", bearish:"#ff6b6b" };
   const vColor = { above:"#00e5a0", in_line:"#f5c842", below:"#ff6b6b" };
 
-  // Reusable field
-  const F = ({ label, value, onChange, type="text", options=null, w=120, placeholder="" }) => (
-    <div style={{ display:"flex", flexDirection:"column", gap:4 }}>
-      <span style={{ fontSize:9, color:"#444", textTransform:"uppercase", letterSpacing:0.8 }}>{label}</span>
+  // Mobile-friendly field — uses CSS classes, no fixed widths
+  const F = ({ label, value, onChange, type="text", options=null, placeholder="", full=false }) => (
+    <div className={"ei-field" + (full?" full":"")}>
+      <span className="ei-label">{label}</span>
       {options
-        ? <select value={value} onChange={e=>onChange(e.target.value)} style={{ width:w, background:"#0d0d0d", border:"1px solid #222", borderRadius:6, color:"#d0d0d0", padding:"6px 8px", fontSize:12 }}>
+        ? <select value={value} onChange={e=>onChange(e.target.value)}>
             {options.map(o=><option key={o}>{o}</option>)}
           </select>
         : <input type={type} value={value} onChange={e=>onChange(e.target.value)} placeholder={placeholder}
-            style={{ width:w, background:"#0d0d0d", border:"1px solid #222", borderRadius:6, color:"#d0d0d0", padding:"6px 8px", fontSize:12, fontFamily:"monospace" }}/>
+            inputMode={type==="number"?"decimal":undefined}/>
       }
     </div>
   );
 
-  const Btn = ({ label="Save", onClick, color="#00e5a0", textColor="#000" }) => (
-    <button onClick={onClick} disabled={saving}
-      style={{ background:color, border:"none", borderRadius:6, color:textColor, padding:"6px 18px", cursor:"pointer", fontSize:12, fontWeight:700, alignSelf:"flex-end" }}>
-      {saving?"…":label}
-    </button>
+  const Btn = ({ label="Save", onClick }) => (
+    <div style={{ flex:"1 1 100%" }}>
+      <button onClick={onClick} disabled={saving} className="ei-save-btn">
+        {saving?"Saving…":label}
+      </button>
+    </div>
   );
 
   const NavBtn = ({ id, label }) => (
-    <button onClick={()=>setSection(id)} style={{ background:section===id?"#00e5a011":"transparent", border:`1px solid ${section===id?"#00e5a033":"#1a1a1a"}`, borderRadius:7, color:section===id?"#00e5a0":"#555", padding:"6px 16px", cursor:"pointer", fontSize:12, fontWeight:section===id?700:400 }}>{label}</button>
+    <button onClick={()=>setSection(id)} className={"ei-nav-btn"+(section===id?" active":"")}>{label}</button>
   );
 
   const Card = ({ label, value, color="#888", sub="" }) => (
@@ -2196,8 +2197,8 @@ function EdgeIntelTab() {
 
   return (
     <div>
-      {/* Nav */}
-      <div style={{ display:"flex", gap:8, marginBottom:20, flexWrap:"wrap" }}>
+      {/* Nav — horizontal scroll on mobile */}
+      <div className="ei-nav" style={{ marginBottom:20 }}>
         <NavBtn id="signals"   label="⚡ Growth Signals"/>
         <NavBtn id="market"    label="📊 Market Data"/>
         <NavBtn id="capex"     label="💰 Capex by Company"/>
@@ -2208,14 +2209,14 @@ function EdgeIntelTab() {
       {/* ── GROWTH SIGNALS ──────────────────────────────────────────────────── */}
       {section==="signals" && <>
         <FormBox title="⚡ Add Growth Signal — derived from your edge intel" color="#00e5a0">
-          <div style={{ display:"flex", gap:12, flexWrap:"wrap", alignItems:"flex-end" }}>
-            <F label="Stock" value={sigF.symbol} onChange={v=>setSigF(f=>({...f,symbol:v}))} options={["ASML","TSM","MU","MRVL","CLS","POWL","LLY","META","BAC"]} w={100}/>
-            <F label="Implied G1 %" value={sigF.implied_g1_pct} onChange={v=>setSigF(f=>({...f,implied_g1_pct:v}))} type="number" w={95} placeholder="e.g. 28"/>
-            <F label="Implied G2 %" value={sigF.implied_g2_pct} onChange={v=>setSigF(f=>({...f,implied_g2_pct:v}))} type="number" w={95} placeholder="e.g. 12"/>
-            <F label="Signal" value={sigF.signal} onChange={v=>setSigF(f=>({...f,signal:v}))} options={["bullish","neutral","bearish"]} w={110}/>
-            <F label="vs Consensus" value={sigF.vs_consensus} onChange={v=>setSigF(f=>({...f,vs_consensus:v}))} options={["above","in_line","below"]} w={110}/>
-            <F label="Delta %" value={sigF.delta_pct} onChange={v=>setSigF(f=>({...f,delta_pct:v}))} type="number" w={80} placeholder="+12"/>
-            <F label="Key driver (one line)" value={sigF.key_driver} onChange={v=>setSigF(f=>({...f,key_driver:v}))} w={280} placeholder="e.g. NXE shipments Q3 above consensus by 4 units"/>
+          <div className="ei-form-row">
+            <F label="Stock" value={sigF.symbol} onChange={v=>setSigF(f=>({...f,symbol:v}))} options={["ASML","TSM","MU","MRVL","CLS","POWL","LLY","META","BAC"]}/>
+            <F label="Implied G1 %" value={sigF.implied_g1_pct} onChange={v=>setSigF(f=>({...f,implied_g1_pct:v}))} type="number" placeholder="e.g. 28"/>
+            <F label="Implied G2 %" value={sigF.implied_g2_pct} onChange={v=>setSigF(f=>({...f,implied_g2_pct:v}))} type="number" placeholder="e.g. 12"/>
+            <F label="Signal" value={sigF.signal} onChange={v=>setSigF(f=>({...f,signal:v}))} options={["bullish","neutral","bearish"]}/>
+            <F label="vs Consensus" value={sigF.vs_consensus} onChange={v=>setSigF(f=>({...f,vs_consensus:v}))} options={["above","in_line","below"]}/>
+            <F label="Delta %" value={sigF.delta_pct} onChange={v=>setSigF(f=>({...f,delta_pct:v}))} type="number" placeholder="+12"/>
+            <F label="Key driver" value={sigF.key_driver} onChange={v=>setSigF(f=>({...f,key_driver:v}))} placeholder="e.g. NXE Q3 +4 units vs consensus" full/>
             <Btn onClick={saveSig}/>
           </div>
           <div style={{ marginTop:10, fontSize:10, color:"#2a2a2a" }}>
@@ -2227,20 +2228,26 @@ function EdgeIntelTab() {
           ? <div style={{ color:"#2a2a2a", fontFamily:"monospace", textAlign:"center", padding:40 }}>No signals yet. Enter your first intel above after reading the monthly report.</div>
           : <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
               {signals.map(s=>(
-                <div key={s.id} style={{ background:"#070707", border:`1px solid ${sColor[s.signal]}22`, borderRadius:10, padding:"12px 18px", display:"grid", gridTemplateColumns:"90px 110px 90px 80px 110px 120px 1fr 28px", gap:12, alignItems:"center" }}>
-                  <div style={{ fontFamily:"monospace", fontWeight:700, fontSize:14, color:"#e0e0e0" }}>{s.symbol}</div>
-                  <div style={{ fontSize:10, color:"#444" }}>{s.as_of_date}</div>
-                  <div style={{ fontFamily:"monospace", fontSize:13, color:"#f5c842" }}>G1 {s.implied_g1_pct}%</div>
-                  <div style={{ fontFamily:"monospace", fontSize:12, color:"#555" }}>G2 {s.implied_g2_pct??'—'}%</div>
-                  <div style={{ fontSize:11, fontWeight:700, color:sColor[s.signal], textTransform:"uppercase" }}>{s.signal}</div>
-                  <div style={{ fontSize:11, color:vColor[s.vs_consensus] }}>
-                    {s.vs_consensus==="above"?"▲":s.vs_consensus==="below"?"▼":"="} consensus
-                    {s.delta_pct!=null && <span style={{ marginLeft:5 }}>({s.delta_pct>0?"+":""}{s.delta_pct}%)</span>}
+                <div key={s.id} style={{ background:"#070707", border:`1px solid ${sColor[s.signal]}22`, borderRadius:10, padding:"14px 16px" }}>
+                  <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
+                    <div style={{ display:"flex", alignItems:"center", gap:12 }}>
+                      <span style={{ fontFamily:"monospace", fontWeight:700, fontSize:16, color:"#e0e0e0" }}>{s.symbol}</span>
+                      <span style={{ fontSize:12, fontWeight:700, color:sColor[s.signal], textTransform:"uppercase", background:sColor[s.signal]+"18", borderRadius:5, padding:"2px 8px" }}>{s.signal}</span>
+                      <span style={{ fontSize:12, color:vColor[s.vs_consensus] }}>
+                        {s.vs_consensus==="above"?"▲":s.vs_consensus==="below"?"▼":"="} {s.vs_consensus.replace("_"," ")}
+                        {s.delta_pct!=null && <span> ({s.delta_pct>0?"+":""}{s.delta_pct}%)</span>}
+                      </span>
+                    </div>
+                    <button onClick={async()=>{ await SB.from("edge_intel_growth_signals").delete().eq("id",s.id); load(); }}
+                      style={{ background:"transparent", border:"none", color:"#333", cursor:"pointer", fontSize:18, padding:"0 4px", lineHeight:1 }}
+                      onMouseEnter={e=>e.target.style.color="#ff6b6b"} onMouseLeave={e=>e.target.style.color="#333"}>×</button>
                   </div>
-                  <div style={{ fontSize:11, color:"#444", fontStyle:"italic", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{s.key_driver}</div>
-                  <button onClick={async()=>{ await SB.from("edge_intel_growth_signals").delete().eq("id",s.id); load(); }}
-                    style={{ background:"transparent", border:"none", color:"#2a2a2a", cursor:"pointer", fontSize:14, padding:0 }}
-                    onMouseEnter={e=>e.target.style.color="#ff6b6b"} onMouseLeave={e=>e.target.style.color="#2a2a2a"}>×</button>
+                  <div style={{ display:"flex", gap:16, flexWrap:"wrap", marginBottom:s.key_driver?6:0 }}>
+                    <span style={{ fontFamily:"monospace", fontSize:13, color:"#f5c842" }}>G1 {s.implied_g1_pct}%</span>
+                    <span style={{ fontFamily:"monospace", fontSize:13, color:"#555" }}>G2 {s.implied_g2_pct??'—'}%</span>
+                    <span style={{ fontSize:11, color:"#2a2a2a" }}>{s.as_of_date}</span>
+                  </div>
+                  {s.key_driver && <div style={{ fontSize:12, color:"#555", fontStyle:"italic" }}>{s.key_driver}</div>}
                 </div>
               ))}
             </div>
@@ -2250,12 +2257,12 @@ function EdgeIntelTab() {
       {/* ── MARKET DATA ─────────────────────────────────────────────────────── */}
       {section==="market" && <>
         <FormBox title="📊 Add Market Data — monthly revenue + capex growth per segment">
-          <div style={{ display:"flex", gap:12, flexWrap:"wrap", alignItems:"flex-end" }}>
-            <F label="Period (e.g. Apr-2026)" value={mktF.period} onChange={v=>setMktF(f=>({...f,period:v}))} w={150} placeholder="Apr-2026"/>
-            <F label="Segment" value={mktF.segment} onChange={v=>setMktF(f=>({...f,segment:v}))} options={["DRAM","NAND","Logic","WFE_total","Generic","HBM"]} w={130}/>
-            <F label="Metric" value={mktF.metric} onChange={v=>setMktF(f=>({...f,metric:v}))} options={["revenue_growth_yoy","capex_growth_yoy","wafer_starts_growth","revenue_qoq","capex_qoq"]} w={200}/>
-            <F label="Value (%)" value={mktF.value} onChange={v=>setMktF(f=>({...f,value:v}))} type="number" w={90} placeholder="35.0"/>
-            <F label="Notes" value={mktF.notes} onChange={v=>setMktF(f=>({...f,notes:v}))} w={220} placeholder="optional context"/>
+          <div className="ei-form-row">
+            <F label="Period (e.g. Apr-2026)" value={mktF.period} onChange={v=>setMktF(f=>({...f,period:v}))} placeholder="Apr-2026"/>
+            <F label="Segment" value={mktF.segment} onChange={v=>setMktF(f=>({...f,segment:v}))} options={["DRAM","NAND","Logic","WFE_total","Generic","HBM"]}/>
+            <F label="Metric" value={mktF.metric} onChange={v=>setMktF(f=>({...f,metric:v}))} options={["revenue_growth_yoy","capex_growth_yoy","wafer_starts_growth","revenue_qoq","capex_qoq"]}/>
+            <F label="Value (%)" value={mktF.value} onChange={v=>setMktF(f=>({...f,value:v}))} type="number" placeholder="35.0"/>
+            <F label="Notes (optional)" value={mktF.notes} onChange={v=>setMktF(f=>({...f,notes:v}))} placeholder="context" full/>
             <Btn onClick={saveMkt}/>
           </div>
         </FormBox>
@@ -2281,13 +2288,13 @@ function EdgeIntelTab() {
       {/* ── CAPEX ───────────────────────────────────────────────────────────── */}
       {section==="capex" && <>
         <FormBox title="💰 Add Capex by Company — quarterly spend">
-          <div style={{ display:"flex", gap:12, flexWrap:"wrap", alignItems:"flex-end" }}>
-            <F label="Period (e.g. Q2-2026)" value={capF.period} onChange={v=>setCapF(f=>({...f,period:v}))} w={150} placeholder="Q2-2026"/>
-            <F label="Company" value={capF.company} onChange={v=>setCapF(f=>({...f,company:v}))} options={["TSMC","Samsung","SK_Hynix","Micron","Intel","ASML_customer_total"]} w={170}/>
-            <F label="Capex $B" value={capF.capex_usd_b} onChange={v=>setCapF(f=>({...f,capex_usd_b:v}))} type="number" w={90} placeholder="8.5"/>
-            <F label="YoY Growth %" value={capF.capex_growth_yoy} onChange={v=>setCapF(f=>({...f,capex_growth_yoy:v}))} type="number" w={110} placeholder="+35"/>
-            <F label="Primary Use" value={capF.primary_use} onChange={v=>setCapF(f=>({...f,primary_use:v}))} options={["EUV_ramp","DRAM_HBM","Logic_advanced","NAND","Legacy_DUV","Mixed"]} w={160}/>
-            <F label="Notes" value={capF.notes} onChange={v=>setCapF(f=>({...f,notes:v}))} w={220} placeholder="optional"/>
+          <div className="ei-form-row">
+            <F label="Period (e.g. Q2-2026)" value={capF.period} onChange={v=>setCapF(f=>({...f,period:v}))} placeholder="Q2-2026"/>
+            <F label="Company" value={capF.company} onChange={v=>setCapF(f=>({...f,company:v}))} options={["TSMC","Samsung","SK_Hynix","Micron","Intel","ASML_customer_total"]}/>
+            <F label="Capex $B" value={capF.capex_usd_b} onChange={v=>setCapF(f=>({...f,capex_usd_b:v}))} type="number" placeholder="8.5"/>
+            <F label="YoY Growth %" value={capF.capex_growth_yoy} onChange={v=>setCapF(f=>({...f,capex_growth_yoy:v}))} type="number" placeholder="+35"/>
+            <F label="Primary Use" value={capF.primary_use} onChange={v=>setCapF(f=>({...f,primary_use:v}))} options={["EUV_ramp","DRAM_HBM","Logic_advanced","NAND","Legacy_DUV","Mixed"]}/>
+            <F label="Notes (optional)" value={capF.notes} onChange={v=>setCapF(f=>({...f,notes:v}))} placeholder="optional" full/>
             <Btn onClick={saveCap}/>
           </div>
         </FormBox>
@@ -2313,18 +2320,18 @@ function EdgeIntelTab() {
       {/* ── ASML TOOL PLAN ──────────────────────────────────────────────────── */}
       {section==="tools" && <>
         <FormBox title="🔧 ASML Tool Shipment Plan — quarterly (DUV / NXE / EXE)">
-          <div style={{ display:"flex", gap:12, flexWrap:"wrap", alignItems:"flex-end" }}>
-            <F label="Period (e.g. Q2-2026)" value={toolF.period} onChange={v=>setToolF(f=>({...f,period:v}))} w={150} placeholder="Q2-2026"/>
-            <F label="Tool Type" value={toolF.tool_type} onChange={v=>setToolF(f=>({...f,tool_type:v}))} options={["DUV","NXE_low_NA","NXE_high_NA","EXE"]} w={140}/>
-            <F label="Units Planned" value={toolF.units_plan} onChange={v=>setToolF(f=>({...f,units_plan:v}))} type="number" w={110} placeholder="12"/>
-            <F label="ASP €M (auto-filled)" value={toolF.asp_eur_m} onChange={v=>setToolF(f=>({...f,asp_eur_m:v}))} type="number" w={120}/>
-            <div style={{ display:"flex", flexDirection:"column", gap:4 }}>
-              <span style={{ fontSize:9, color:"#444", textTransform:"uppercase" }}>Implied Rev</span>
-              <div style={{ fontFamily:"monospace", fontSize:15, fontWeight:700, color:"#00e5a0", padding:"6px 10px", background:"#0a0a0a", borderRadius:6, minWidth:100, border:"1px solid #1a1a1a" }}>
+          <div className="ei-form-row">
+            <F label="Period (e.g. Q2-2026)" value={toolF.period} onChange={v=>setToolF(f=>({...f,period:v}))} placeholder="Q2-2026"/>
+            <F label="Tool Type" value={toolF.tool_type} onChange={v=>setToolF(f=>({...f,tool_type:v}))} options={["DUV","NXE_low_NA","NXE_high_NA","EXE"]}/>
+            <F label="Units Planned" value={toolF.units_plan} onChange={v=>setToolF(f=>({...f,units_plan:v}))} type="number" placeholder="12"/>
+            <F label="ASP €M (auto)" value={toolF.asp_eur_m} onChange={v=>setToolF(f=>({...f,asp_eur_m:v}))} type="number"/>
+            <div className="ei-field">
+              <span className="ei-label">Implied Rev</span>
+              <div style={{ fontFamily:"monospace", fontSize:16, fontWeight:700, color:"#00e5a0", padding:"10px 12px", background:"#0a0a0a", borderRadius:6, border:"1px solid #1a1a1a" }}>
                 €{((parseFloat(toolF.units_plan)||0)*(parseFloat(toolF.asp_eur_m)||0)).toFixed(0)}M
               </div>
             </div>
-            <F label="Notes" value={toolF.notes} onChange={v=>setToolF(f=>({...f,notes:v}))} w={200} placeholder="optional"/>
+            <F label="Notes (optional)" value={toolF.notes} onChange={v=>setToolF(f=>({...f,notes:v}))} placeholder="optional" full/>
             <Btn onClick={saveTool}/>
           </div>
           <div style={{ marginTop:10, fontSize:10, color:"#2a2a2a" }}>
@@ -2698,15 +2705,38 @@ export default function App() {
         input:focus, textarea:focus { border-color: #00e5a033 !important; }
         ::-webkit-scrollbar { width: 3px; } ::-webkit-scrollbar-thumb { background: #1e1e1e; }
         .recharts-tooltip-wrapper { outline: none; }
+        /* ── Mobile ── */
+        .ei-form-row { display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-end; }
+        .ei-field { display: flex; flex-direction: column; gap: 4px; flex: 1 1 140px; min-width: 0; }
+        .ei-field input, .ei-field select {
+          width: 100%; background: #0d0d0d; border: 1px solid #222; border-radius: 6px;
+          color: #d0d0d0; padding: 10px 12px; font-size: 16px; font-family: monospace;
+          -webkit-appearance: none; appearance: none;
+        }
+        .ei-field select { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%23555'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 10px center; padding-right: 28px; }
+        .ei-label { font-size: 10px; color: #555; text-transform: uppercase; letter-spacing: 0.8px; }
+        .ei-save-btn { background: #00e5a0; border: none; border-radius: 8px; color: #000; padding: 12px 24px; font-size: 15px; font-weight: 700; cursor: pointer; width: 100%; margin-top: 4px; }
+        .ei-nav { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 4px; -webkit-overflow-scrolling: touch; scrollbar-width: none; }
+        .ei-nav::-webkit-scrollbar { display: none; }
+        .ei-nav-btn { flex-shrink: 0; border-radius: 7px; padding: 8px 14px; cursor: pointer; font-size: 12px; font-weight: 600; white-space: nowrap; border: 1px solid #1a1a1a; background: transparent; color: #555; }
+        .ei-nav-btn.active { background: #00e5a011; border-color: #00e5a033; color: #00e5a0; }
+        .app-tabs { display: flex; gap: 0; overflow-x: auto; flex: 1; -webkit-overflow-scrolling: touch; scrollbar-width: none; }
+        .app-tabs::-webkit-scrollbar { display: none; }
+        @media (max-width: 600px) {
+          .ei-field { flex: 1 1 calc(50% - 6px); }
+          .ei-field.full { flex: 1 1 100%; }
+          .app-header { padding: 0 16px !important; }
+          .app-content { padding: 16px !important; }
+        }
       `}</style>
 
       {/* Header */}
-      <div style={{ borderBottom: "1px solid #0e0e0e", padding: "0 32px", display: "flex", alignItems: "center", gap: 32, background: "#060606", position: "sticky", top: 0, zIndex: 10 }}>
+      <div className="app-header" style={{ borderBottom: "1px solid #0e0e0e", padding: "0 32px", display: "flex", alignItems: "center", gap: 16, background: "#060606", position: "sticky", top: 0, zIndex: 10 }}>
         <div style={{ padding: "16px 0", display: "flex", alignItems: "baseline", gap: 7 }}>
           <span style={{ fontFamily: "monospace", fontSize: 15, fontWeight: 700, color: "#fff", letterSpacing: 1 }}>ALPHA</span>
           <span style={{ fontFamily: "monospace", fontSize: 15, fontWeight: 700, color: "#00e5a0" }}>DESK</span>
         </div>
-        <div style={{ display: "flex", gap: 2, flex: 1 }}>
+        <div className="app-tabs">
           {TABS.map(t => (
             <button key={t.id} onClick={() => setTab(t.id)}
               style={{ background: "transparent", border: "none", borderBottom: `2px solid ${tab === t.id ? "#00e5a0" : "transparent"}`, color: tab === t.id ? "#e0e0e0" : "#3a3a3a", padding: "16px 14px", cursor: "pointer", display: "flex", alignItems: "center", gap: 7, fontSize: 13, fontWeight: tab === t.id ? 600 : 400, transition: "all 0.2s", whiteSpace: "nowrap" }}>
@@ -2720,7 +2750,7 @@ export default function App() {
       </div>
 
       {/* Content */}
-      <div style={{ padding: "24px 32px", maxWidth: 1400, margin: "0 auto" }}>
+      <div className="app-content" style={{ padding: "24px 32px", maxWidth: 1400, margin: "0 auto" }}>
         {booting ? (
           <div style={{ display: "flex", alignItems: "center", gap: 12, color: "#2a2a2a", fontFamily: "monospace", padding: "60px 0" }}>
             <Spinner size={18}/> Connecting to database…
