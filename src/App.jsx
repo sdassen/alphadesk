@@ -1622,20 +1622,17 @@ function ValuationTab({ positions, shortlist }) {
         useForwardPEBasis = true;
       }
 
-      // Sanity check: base band at t=0 should ≈ current price
-      // If baseEps × anchorPE is way off, it means data is distorted
-      const impliedPrice = baseEps && anchorPE ? baseEps * anchorPE : null;
-      const priceRatio = impliedPrice && currentPrice ? impliedPrice / currentPrice : 1;
-      // If ratio is >2 or <0.4, there's a mismatch — use price/PE directly
-      if (priceRatio > 2.0 || priceRatio < 0.4) {
-        // Fallback: derive baseEps directly from current price so band starts at price
-        baseEps  = currentPrice && anchorPE ? currentPrice / anchorPE : baseEps;
-      }
-
-      // Config multipliers define the bear/base/bull PE range for this stock type
-      const peBear = anchorPE * (cfg.pe_bear_mult || 0.70);
-      const peBase = anchorPE * (cfg.pe_base_mult || 1.00);
-      const peBull = anchorPE * (cfg.pe_bull_mult || 1.40);
+      // ── PE bands ─────────────────────────────────────────────────────────────
+      // Use absolute PE values from config (pe_bear_abs / pe_base_abs / pe_bull_abs).
+      // These represent the historical fair-value range for this stock type,
+      // NOT relative to the current PE — so the band tells you if the stock is
+      // cheap or expensive vs its own historical norm, not vs today's price.
+      //
+      // Example META: bear=14x, base=22x, bull=32x.
+      // If current fwd PE = 17x and base = 22x, band t=0 is ABOVE current price → BUY ZONE.
+      const peBear = cfg.pe_bear_abs || anchorPE * (cfg.pe_bear_mult || 0.70);
+      const peBase = cfg.pe_base_abs || anchorPE * (cfg.pe_base_mult || 1.00);
+      const peBull = cfg.pe_bull_abs || anchorPE * (cfg.pe_bull_mult || 1.40);
 
       // ── Build bands ───────────────────────────────────────────────────────
       const bands = [];
@@ -1677,6 +1674,7 @@ function ValuationTab({ positions, shortlist }) {
           : (forwardEps ? "forward EPS" : "derived"),
         g1Auto, g2Auto, g1Source, g2Source, g1Capped, rawG1,
         peBear, peBase, peBull,
+        anchorPE,
         useForwardPEBasis, histPEsCount,
         targetMean, targetHigh, targetLow, numAnalysts,
         priceHistory, bands, histMap, fh,
