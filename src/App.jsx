@@ -1883,7 +1883,11 @@ function ValuationTab({ positions, shortlist }) {
               <div style={{ fontSize: 10, color: "#f5c842", fontWeight: 700, textTransform: "uppercase", letterSpacing: 1 }}>
                 ✎ Assumptions — {data.stockType || "generic"} model
               </div>
-              {data.cfgNote && <div style={{ fontSize: 9, color: "#2a2a2a", marginTop: 3 }}>{data.cfgNote}</div>}
+              {data.cfgNote && (
+              <div style={{ fontSize: 10, color: "#444", marginTop: 4, lineHeight: 1.6, maxWidth: 600 }}>
+                {data.cfgNote}
+              </div>
+            )}
             </div>
             {forecast && (
               <div style={{ fontSize: 10, background: forecast.from_edge_intel ? "#f5c84211" : "#00e5a011", border: `1px solid ${forecast.from_edge_intel ? "#f5c84233" : "#00e5a033"}`, borderRadius: 5, padding: "4px 10px", color: forecast.from_edge_intel ? "#f5c842" : "#00e5a0" }}>
@@ -2130,6 +2134,18 @@ function ValuationTab({ positions, shortlist }) {
               </div>
             </div>
           </div>
+
+          {/* ── Investment thesis from config ── */}
+          {data.cfgNote && (
+            <div style={{ marginTop: 10, background: "#070707", border: "1px solid #1e1e1e", borderRadius: 10, padding: "14px 16px" }}>
+              <div style={{ fontSize: 9, color: "#2a2a2a", textTransform: "uppercase", letterSpacing: 1, marginBottom: 8 }}>
+                {data.symbol} · Investment Thesis & Edge Intel Link
+              </div>
+              <div style={{ fontSize: 11, color: "#3a3a3a", lineHeight: 1.8 }}>
+                {data.cfgNote}
+              </div>
+            </div>
+          )}
         </>
       )}
     </div>
