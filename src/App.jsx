@@ -2152,27 +2152,44 @@ function ValuationTab({ positions, shortlist }) {
   );
 }
 // ── Edge Intel shared components (top-level — never re-defined on render) ────
+// ── Edge Intel Components (top-level, never re-created on render) ─────────────
+
 function EiNavBtn({ id, label, activeSection, onSelect }) {
+  const active = activeSection === id;
   return (
-    <button
-      onClick={() => onSelect(id)}
-      className={"ei-nav-btn" + (activeSection === id ? " active" : "")}
-    >
-      {label}
-    </button>
+    <button onClick={() => onSelect(id)} style={{
+      flexShrink: 0,
+      padding: "10px 18px",
+      borderRadius: 10,
+      border: `1.5px solid ${active ? "#00e5a066" : "#222"}`,
+      background: active ? "#00e5a012" : "#0c0c0c",
+      color: active ? "#00e5a0" : "#555",
+      fontWeight: active ? 700 : 500,
+      fontSize: 13,
+      cursor: "pointer",
+      whiteSpace: "nowrap",
+      minHeight: 44,
+      touchAction: "manipulation",
+      WebkitTapHighlightColor: "transparent",
+      transition: "all 0.15s",
+    }}>{label}</button>
   );
 }
 
-function EiField({ label, value, onChange, type="text", options=null, placeholder="", full=false, wide=false }) {
+// Stacked label + input, full-width by default on mobile
+function EiField({ label, value, onChange, type="text", options=null, placeholder="", hint="" }) {
   return (
-    <div className={"ei-field" + (full ? " full" : "") + (wide ? " wide" : "")}>
-      <span className="ei-label">{label}</span>
+    <div style={{ display:"flex", flexDirection:"column", gap:6, flex:"1 1 160px", minWidth:0 }}>
+      <span style={{ fontSize:11, fontWeight:600, color:"#666", textTransform:"uppercase", letterSpacing:"0.7px" }}>{label}</span>
       {options
-        ? <select
-            value={value}
-            onChange={e => onChange(e.target.value)}
-          >
-            {options.map(o => <option key={o} value={o}>{o}</option>)}
+        ? <select value={value} onChange={e => onChange(e.target.value)} style={{
+            width:"100%", background:"#111", border:"1.5px solid #252525", borderRadius:10,
+            color:"#e0e0e0", padding:"12px 14px", fontSize:16, minHeight:48,
+            WebkitAppearance:"none", appearance:"none",
+            backgroundImage:`url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8'%3E%3Cpath d='M0 0l6 8 6-8z' fill='%23555'/%3E%3C/svg%3E")`,
+            backgroundRepeat:"no-repeat", backgroundPosition:"right 14px center", paddingRight:36,
+          }}>
+            {options.map(o => <option key={o} value={o}>{o.replace(/_/g," ")}</option>)}
           </select>
         : <input
             type={type === "number" ? "text" : type}
@@ -2180,46 +2197,71 @@ function EiField({ label, value, onChange, type="text", options=null, placeholde
             value={value}
             onChange={e => onChange(e.target.value)}
             placeholder={placeholder}
-            autoComplete="off"
-            autoCorrect="off"
-            autoCapitalize="off"
-            spellCheck={false}
+            autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false}
+            style={{
+              width:"100%", background:"#111", border:"1.5px solid #252525", borderRadius:10,
+              color:"#e0e0e0", padding:"12px 14px", fontSize:16, minHeight:48,
+              fontFamily:"monospace",
+            }}
           />
       }
+      {hint && <span style={{ fontSize:10, color:"#2a2a2a" }}>{hint}</span>}
     </div>
   );
 }
 
 function EiCard({ label, value, color="#888", sub="" }) {
   return (
-    <div style={{ background:"#111", borderRadius:7, padding:"10px 12px" }}>
-      <div style={{ fontSize:9, color:"#333", textTransform:"uppercase", letterSpacing:0.8, marginBottom:5 }}>{label}</div>
-      <div style={{ fontFamily:"monospace", fontSize:15, fontWeight:700, color }}>{value}</div>
-      {sub && <div style={{ fontSize:9, color:"#2a2a2a", marginTop:3 }}>{sub}</div>}
+    <div style={{ background:"#111", borderRadius:10, padding:"12px 14px", border:"1px solid #1a1a1a" }}>
+      <div style={{ fontSize:9, color:"#333", textTransform:"uppercase", letterSpacing:0.8, marginBottom:6 }}>{label}</div>
+      <div style={{ fontFamily:"monospace", fontSize:16, fontWeight:700, color }}>{value}</div>
+      {sub && <div style={{ fontSize:10, color:"#2a2a2a", marginTop:3 }}>{sub}</div>}
     </div>
   );
 }
 
-function EiFormBox({ title, color="#f5c842", children }) {
+function EiSaveBtn({ onClick, saving }) {
   return (
-    <div style={{ background:"#070707", border:`1px solid ${color}22`, borderRadius:10, padding:"16px", marginBottom:16 }}>
-      <div style={{ fontSize:10, color, fontWeight:700, textTransform:"uppercase", letterSpacing:1, marginBottom:14 }}>{title}</div>
-      {children}
+    <button onClick={onClick} disabled={saving} style={{
+      flex:"1 1 100%",
+      background: saving ? "#1a1a1a" : "#00e5a0",
+      border:"none", borderRadius:12, color: saving ? "#555" : "#000",
+      padding:"15px 24px", fontSize:16, fontWeight:700, cursor:"pointer",
+      minHeight:52, touchAction:"manipulation", WebkitTapHighlightColor:"transparent",
+      transition:"all 0.15s",
+    }}>{saving ? "Saving…" : "Save"}</button>
+  );
+}
+
+// Unified delete+edit row for a data record card
+function EiRecordActions({ onEdit, onDelete }) {
+  return (
+    <div style={{ display:"flex", gap:8, marginTop:10, borderTop:"1px solid #1a1a1a", paddingTop:10 }}>
+      {onEdit && (
+        <button onClick={onEdit} style={{
+          flex:1, background:"#1a1a1a", border:"1.5px solid #252525", borderRadius:8,
+          color:"#888", fontSize:13, padding:"9px 0", cursor:"pointer", fontWeight:600,
+          touchAction:"manipulation",
+        }}>✎ Edit</button>
+      )}
+      <button onClick={onDelete} style={{
+        flex:1, background:"#1a1a1a", border:"1.5px solid #ff6b6b22", borderRadius:8,
+        color:"#ff6b6b", fontSize:13, padding:"9px 0", cursor:"pointer", fontWeight:600,
+        touchAction:"manipulation",
+      }}>✕ Delete</button>
     </div>
   );
 }
 
 // ── Edge Intel Tab ────────────────────────────────────────────────────────────
-// Manually entered semiconductor market intelligence from PDF reports.
-// 5 sections: Growth Signals / Market Data / Capex / ASML Tool Plan / ASML Revenue Calc
 function EdgeIntelTab() {
-  const [section, setSection]     = useState("signals");
-  const [marketData, setMktData]  = useState([]);
-  const [capexData, setCapData]   = useState([]);
-  const [toolData, setToolData]   = useState([]);
-  const [signals, setSignals]     = useState([]);
-  const [loading, setLoading]     = useState(true);
-  const [saving, setSaving]       = useState(false);
+  const [section, setSection]  = useState("signals");
+  const [marketData, setMkt]   = useState([]);
+  const [capexData, setCap]    = useState([]);
+  const [toolData, setTools]   = useState([]);
+  const [signals, setSigs]     = useState([]);
+  const [loading, setLoading]  = useState(true);
+  const [saving, setSaving]    = useState(false);
 
   const [mktF, setMktF]   = useState({ period:"", segment:"DRAM", metric:"revenue_growth_yoy", value:"", notes:"" });
   const [capF, setCapF]   = useState({ period:"", company:"TSMC", capex_usd_b:"", capex_growth_yoy:"", primary_use:"EUV_ramp", notes:"" });
@@ -2236,7 +2278,7 @@ function EdgeIntelTab() {
       SB.from("edge_intel_asml_tools").select("*").neq("period","REFERENCE").order("period",{ascending:false}).limit(60),
       SB.from("edge_intel_growth_signals").select("*").order("as_of_date",{ascending:false}).limit(30),
     ]);
-    setMktData(m||[]); setCapData(c||[]); setToolData(t||[]); setSignals(s||[]);
+    setMkt(m||[]); setCap(c||[]); setTools(t||[]); setSigs(s||[]);
     setLoading(false);
   };
   useEffect(()=>{ load(); },[]);
@@ -2245,32 +2287,57 @@ function EdgeIntelTab() {
   const saveMkt = async () => {
     if (!mktF.period||!mktF.value) return;
     setSaving(true);
-    await SB.from("edge_intel_market").upsert({ period:mktF.period, segment:mktF.segment, metric:mktF.metric, value:parseFloat(mktF.value), notes:mktF.notes||null },{ onConflict:"period,segment,metric" });
-    setMktF(f=>({...f,value:"",notes:""})); await load(); setSaving(false);
-  };
-  const saveCap = async () => {
-    if (!capF.period||!capF.company) return;
-    setSaving(true);
-    await SB.from("edge_intel_capex").upsert({ period:capF.period, company:capF.company, capex_usd_b:capF.capex_usd_b?parseFloat(capF.capex_usd_b):null, capex_growth_yoy:capF.capex_growth_yoy?parseFloat(capF.capex_growth_yoy):null, primary_use:capF.primary_use, notes:capF.notes||null },{ onConflict:"period,company" });
-    setCapF(f=>({...f,capex_usd_b:"",capex_growth_yoy:"",notes:""})); await load(); setSaving(false);
-  };
-  const saveTool = async () => {
-    if (!toolF.period||!toolF.units_plan) return;
-    setSaving(true);
-    await SB.from("edge_intel_asml_tools").upsert({ period:toolF.period, tool_type:toolF.tool_type, units_plan:parseFloat(toolF.units_plan), asp_eur_m:toolF.asp_eur_m?parseFloat(toolF.asp_eur_m):ASP[toolF.tool_type], notes:toolF.notes||null },{ onConflict:"period,tool_type" });
-    setToolF(f=>({...f,units_plan:"",notes:""})); await load(); setSaving(false);
-  };
-  const saveSig = async () => {
-    if (!sigF.symbol||!sigF.implied_g1_pct) return;
-    setSaving(true);
-    await SB.from("edge_intel_growth_signals").upsert({ as_of_date:new Date().toISOString().split("T")[0], symbol:sigF.symbol, implied_g1_pct:parseFloat(sigF.implied_g1_pct), implied_g2_pct:sigF.implied_g2_pct?parseFloat(sigF.implied_g2_pct):null, signal:sigF.signal, vs_consensus:sigF.vs_consensus, delta_pct:sigF.delta_pct?parseFloat(sigF.delta_pct):null, key_driver:sigF.key_driver||null },{ onConflict:"as_of_date,symbol" });
+    await SB.from("edge_intel_market").upsert({
+      period:mktF.period, segment:mktF.segment, metric:mktF.metric,
+      value:parseFloat(mktF.value), notes:mktF.notes||null
+    },{ onConflict:"period,segment,metric" });
+    setMktF(f=>({...f,value:"",notes:""}));
     await load(); setSaving(false);
   };
 
-  // Group helpers
-  const byPeriod = (arr) => arr.reduce((acc,r)=>{ (acc[r.period]=acc[r.period]||[]).push(r); return acc; },{});
+  const saveCap = async () => {
+    if (!capF.period||!capF.company) return;
+    setSaving(true);
+    await SB.from("edge_intel_capex").upsert({
+      period:capF.period, company:capF.company,
+      capex_usd_b:capF.capex_usd_b?parseFloat(capF.capex_usd_b):null,
+      capex_growth_yoy:capF.capex_growth_yoy?parseFloat(capF.capex_growth_yoy):null,
+      primary_use:capF.primary_use, notes:capF.notes||null
+    },{ onConflict:"period,company" });
+    setCapF(f=>({...f,capex_usd_b:"",capex_growth_yoy:"",notes:""}));
+    await load(); setSaving(false);
+  };
 
-  // ASML implied revenue calc
+  const saveTool = async () => {
+    if (!toolF.period||!toolF.units_plan) return;
+    setSaving(true);
+    await SB.from("edge_intel_asml_tools").upsert({
+      period:toolF.period, tool_type:toolF.tool_type,
+      units_plan:parseFloat(toolF.units_plan),
+      asp_eur_m:toolF.asp_eur_m?parseFloat(toolF.asp_eur_m):ASP[toolF.tool_type],
+      notes:toolF.notes||null
+    },{ onConflict:"period,tool_type" });
+    setToolF(f=>({...f,units_plan:"",notes:""}));
+    await load(); setSaving(false);
+  };
+
+  const saveSig = async () => {
+    if (!sigF.symbol||!sigF.implied_g1_pct) return;
+    setSaving(true);
+    await SB.from("edge_intel_growth_signals").upsert({
+      as_of_date:new Date().toISOString().split("T")[0],
+      symbol:sigF.symbol, implied_g1_pct:parseFloat(sigF.implied_g1_pct),
+      implied_g2_pct:sigF.implied_g2_pct?parseFloat(sigF.implied_g2_pct):null,
+      signal:sigF.signal, vs_consensus:sigF.vs_consensus,
+      delta_pct:sigF.delta_pct?parseFloat(sigF.delta_pct):null,
+      key_driver:sigF.key_driver||null
+    },{ onConflict:"as_of_date,symbol" });
+    await load(); setSaving(false);
+  };
+
+  const byPeriod = arr => arr.reduce((acc,r)=>{ (acc[r.period]=acc[r.period]||[]).push(r); return acc; },{});
+
+  // ASML revenue calc
   const asmlQ = {};
   toolData.forEach(t=>{
     if (!asmlQ[t.period]) asmlQ[t.period]={ period:t.period, total:0, items:[] };
@@ -2281,257 +2348,422 @@ function EdgeIntelTab() {
 
   const sColor = { bullish:"#00e5a0", neutral:"#f5c842", bearish:"#ff6b6b" };
   const vColor = { above:"#00e5a0", in_line:"#f5c842", below:"#ff6b6b" };
+  const impliedRev = ((parseFloat(toolF.units_plan)||0)*(parseFloat(toolF.asp_eur_m)||0));
+
+  const S = { // shared styles
+    section: { display:"flex", flexDirection:"column", gap:12 },
+    form: { background:"#0c0c0c", border:"1.5px solid #1e1e1e", borderRadius:14, padding:"16px" },
+    formTitle: { fontSize:11, fontWeight:700, color:"#444", textTransform:"uppercase", letterSpacing:"0.8px", marginBottom:14 },
+    row: { display:"flex", gap:10, flexWrap:"wrap" },
+    divider: { height:1, background:"#141414", margin:"4px 0" },
+    period: { display:"flex", justifyContent:"space-between", alignItems:"center",
+      padding:"10px 14px", background:"#0c0c0c", borderRadius:10, border:"1px solid #1a1a1a",
+      marginBottom:2 },
+    periodLabel: { fontFamily:"monospace", fontSize:12, fontWeight:700, color:"#555" },
+    empty: { color:"#2a2a2a", fontFamily:"monospace", textAlign:"center", padding:"40px 0", fontSize:13 },
+    dataCard: { background:"#111", borderRadius:10, border:"1px solid #1e1e1e", padding:"14px" },
+    dataGrid: { display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(150px, 1fr))", gap:10 },
+  };
 
   if (loading) return <div style={{ display:"flex", justifyContent:"center", padding:60 }}><Spinner size={24}/></div>;
 
+  const sColor = { bullish:"#00e5a0", neutral:"#f5c842", bearish:"#ff6b6b" };
+  const vColor = { above:"#00e5a0", in_line:"#f5c842", below:"#ff6b6b" };
+  const impliedRev = (parseFloat(toolF.units_plan)||0)*(parseFloat(toolF.asp_eur_m)||0);
+
   return (
     <div>
-      {/* Nav — horizontal scroll on mobile */}
-      <div className="ei-nav" style={{ marginBottom:20 }}>
-        <EiNavBtn id="signals" label="⚡ Signals"      activeSection={section} onSelect={setSection}/>
-        <EiNavBtn id="market"  label="📊 Market"       activeSection={section} onSelect={setSection}/>
-        <EiNavBtn id="capex"   label="💰 Capex"        activeSection={section} onSelect={setSection}/>
-        <EiNavBtn id="tools"   label="🔧 Tool Plan"    activeSection={section} onSelect={setSection}/>
-        <EiNavBtn id="calc"    label="📐 ASML Calc"    activeSection={section} onSelect={setSection}/>
+      {/* ── Nav ── */}
+      <div className="ei-nav">
+        {[["signals","⚡ Signals"],["market","📊 Market"],["capex","💰 Capex"],["tools","🔧 Tool Plan"],["calc","📐 ASML Calc"]].map(([id,label])=>(
+          <button key={id} className={"ei-nav-btn"+(section===id?" active":"")} onClick={()=>setSection(id)}>{label}</button>
+        ))}
       </div>
 
-      {/* ── GROWTH SIGNALS ──────────────────────────────────────────────────── */}
-      {section==="signals" && <>
-        <EiFormBox title="⚡ Add Growth Signal — derived from your edge intel" color="#00e5a0">
-          <div className="ei-form-row">
-            <EiField label="Stock" value={sigF.symbol} onChange={v=>setSigF(f=>({...f,symbol:v}))} options={["ASML","TSM","MU","MRVL","AVGO","LRCX","KLAC","CLS","POWL","LLY","META","BAC"]}/>
-            <EiField label="Implied G1 %" value={sigF.implied_g1_pct} onChange={v=>setSigF(f=>({...f,implied_g1_pct:v}))} type="number" placeholder="e.g. 28"/>
-            <EiField label="Implied G2 %" value={sigF.implied_g2_pct} onChange={v=>setSigF(f=>({...f,implied_g2_pct:v}))} type="number" placeholder="e.g. 12"/>
-            <EiField label="Signal" value={sigF.signal} onChange={v=>setSigF(f=>({...f,signal:v}))} options={["bullish","neutral","bearish"]}/>
-            <EiField label="vs Consensus" value={sigF.vs_consensus} onChange={v=>setSigF(f=>({...f,vs_consensus:v}))} options={["above","in_line","below"]}/>
-            <EiField label="Delta %" value={sigF.delta_pct} onChange={v=>setSigF(f=>({...f,delta_pct:v}))} type="number" placeholder="+12"/>
-            <EiField label="Key driver" value={sigF.key_driver} onChange={v=>setSigF(f=>({...f,key_driver:v}))} placeholder="e.g. NXE Q3 +4 units vs consensus" full/>
-            <button onClick={saveSig} disabled={saving} className="ei-save-btn" style={{flex:"1 1 100%"}}>{saving?"Saving…":"Save"}</button>
-          </div>
-          <div style={{ marginTop:10, fontSize:10, color:"#2a2a2a" }}>
-            Signals auto-feed into the Valuation tab — when a signal exists for a stock it overrides the auto-detected growth rate.
-          </div>
-        </EiFormBox>
+      {/* ════ GROWTH SIGNALS ════ */}
+      {section==="signals" && <div className="ei-section">
+        <div className="ei-form accent-green">
+          <div className="ei-form-title green">⚡ New Growth Signal</div>
 
-        {signals.length===0
-          ? <div style={{ color:"#2a2a2a", fontFamily:"monospace", textAlign:"center", padding:40 }}>No signals yet. Enter your first intel above after reading the monthly report.</div>
-          : <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
-              {signals.map(s=>(
-                <div key={s.id} style={{ background:"#070707", border:`1px solid ${sColor[s.signal]}22`, borderRadius:10, padding:"14px 16px" }}>
-                  <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
-                    <div style={{ display:"flex", alignItems:"center", gap:12 }}>
-                      <span style={{ fontFamily:"monospace", fontWeight:700, fontSize:16, color:"#e0e0e0" }}>{s.symbol}</span>
-                      <span style={{ fontSize:12, fontWeight:700, color:sColor[s.signal], textTransform:"uppercase", background:sColor[s.signal]+"18", borderRadius:5, padding:"2px 8px" }}>{s.signal}</span>
-                      <span style={{ fontSize:12, color:vColor[s.vs_consensus] }}>
-                        {s.vs_consensus==="above"?"▲":s.vs_consensus==="below"?"▼":"="} {s.vs_consensus.replace("_"," ")}
-                        {s.delta_pct!=null && <span> ({s.delta_pct>0?"+":""}{s.delta_pct}%)</span>}
-                      </span>
-                    </div>
-                    <button onClick={async()=>{ await SB.from("edge_intel_growth_signals").delete().eq("id",s.id); load(); }}
-                      style={{ background:"transparent", border:"none", color:"#333", cursor:"pointer", fontSize:18, padding:"0 4px", lineHeight:1 }}
-                      onMouseEnter={e=>e.target.style.color="#ff6b6b"} onMouseLeave={e=>e.target.style.color="#333"}>×</button>
-                  </div>
-                  <div style={{ display:"flex", gap:16, flexWrap:"wrap", marginBottom:s.key_driver?6:0 }}>
-                    <span style={{ fontFamily:"monospace", fontSize:13, color:"#f5c842" }}>G1 {s.implied_g1_pct}%</span>
-                    <span style={{ fontFamily:"monospace", fontSize:13, color:"#555" }}>G2 {s.implied_g2_pct??'—'}%</span>
-                    <span style={{ fontSize:11, color:"#2a2a2a" }}>{s.as_of_date}</span>
-                  </div>
-                  {s.key_driver && <div style={{ fontSize:12, color:"#555", fontStyle:"italic" }}>{s.key_driver}</div>}
-                </div>
-              ))}
-            </div>
-        }
-      </>}
-
-      {/* ── MARKET DATA ─────────────────────────────────────────────────────── */}
-      {section==="market" && <>
-        <EiFormBox title="📊 Add Market Data — monthly revenue + capex growth per segment">
-          <div className="ei-form-row">
-            <EiField label="Period (e.g. Apr-2026)" value={mktF.period} onChange={v=>setMktF(f=>({...f,period:v}))} placeholder="Apr-2026"/>
-            <EiField label="Segment" value={mktF.segment} onChange={v=>setMktF(f=>({...f,segment:v}))} options={["DRAM","NAND","Logic","WFE_total","Generic","HBM"]}/>
-            <EiField label="Metric" value={mktF.metric} onChange={v=>setMktF(f=>({...f,metric:v}))} options={["revenue_growth_yoy","capex_growth_yoy","wafer_starts_growth","revenue_qoq","capex_qoq"]}/>
-            <EiField label="Value (%)" value={mktF.value} onChange={v=>setMktF(f=>({...f,value:v}))} type="number" placeholder="35.0"/>
-            <EiField label="Notes (optional)" value={mktF.notes} onChange={v=>setMktF(f=>({...f,notes:v}))} placeholder="context" full/>
-            <button onClick={saveMkt} disabled={saving} className="ei-save-btn" style={{flex:"1 1 100%"}}>{saving?"Saving…":"Save"}</button>
-          </div>
-        </EiFormBox>
-        {Object.entries(byPeriod(marketData)).map(([period,rows])=>(
-          <div key={period} style={{ background:"#070707", border:"1px solid #141414", borderRadius:10, padding:"12px 16px", marginBottom:10 }}>
-            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:10 }}>
-              <span style={{ fontSize:11, color:"#555", fontFamily:"monospace", fontWeight:700 }}>{period}</span>
-            </div>
-            <div style={{ display:"flex", gap:10, flexWrap:"wrap" }}>
-              {rows.map(r=>(
-                <div key={r.id} style={{ background:"#0a0a0a", borderRadius:7, padding:"8px 12px", minWidth:150, position:"relative" }}>
-                  <div style={{ position:"absolute", top:6, right:6, display:"flex", gap:4 }}>
-                    <button onClick={()=>setMktF({ period:r.period, segment:r.segment, metric:r.metric, value:String(r.value), notes:r.notes||"" })}
-                      style={{ background:"transparent", border:"none", color:"#2a2a2a", cursor:"pointer", fontSize:11, lineHeight:1, padding:"2px 4px" }}
-                      onMouseEnter={e=>e.target.style.color="#f5c842"} onMouseLeave={e=>e.target.style.color="#2a2a2a"} title="Edit">✎</button>
-                    <button onClick={async()=>{ await SB.from("edge_intel_market").delete().eq("id",r.id); load(); }}
-                      style={{ background:"transparent", border:"none", color:"#2a2a2a", cursor:"pointer", fontSize:14, lineHeight:1, padding:"2px 4px" }}
-                      onMouseEnter={e=>e.target.style.color="#ff6b6b"} onMouseLeave={e=>e.target.style.color="#2a2a2a"} title="Delete">×</button>
-                  </div>
-                  <div style={{ fontSize:9, color:"#333", textTransform:"uppercase", letterSpacing:0.8, paddingRight:16 }}>{r.segment} · {r.metric.replace(/_/g," ")}</div>
-                  <div style={{ fontFamily:"monospace", fontSize:17, fontWeight:700, color:r.value>0?"#00e5a0":"#ff6b6b", marginTop:4 }}>
-                    {r.value>0?"+":""}{r.value}%
-                  </div>
-                  {r.notes && <div style={{ fontSize:9, color:"#2a2a2a", marginTop:3 }}>{r.notes}</div>}
-                </div>
-              ))}
-            </div>
-          </div>
-        ))}
-        {marketData.length===0 && <div style={{ color:"#2a2a2a", fontFamily:"monospace", textAlign:"center", padding:40 }}>No market data yet</div>}
-      </>}
-
-      {/* ── CAPEX ───────────────────────────────────────────────────────────── */}
-      {section==="capex" && <>
-        <EiFormBox title="💰 Add Capex by Company — quarterly spend">
-          <div className="ei-form-row">
-            <EiField label="Period (e.g. Q2-2026)" value={capF.period} onChange={v=>setCapF(f=>({...f,period:v}))} placeholder="Q2-2026"/>
-            <EiField label="Company" value={capF.company} onChange={v=>setCapF(f=>({...f,company:v}))} options={["TSMC","Samsung","SK_Hynix","Micron","Intel","ASML_customer_total"]}/>
-            <EiField label="Capex $B" value={capF.capex_usd_b} onChange={v=>setCapF(f=>({...f,capex_usd_b:v}))} type="number" placeholder="8.5"/>
-            <EiField label="YoY Growth %" value={capF.capex_growth_yoy} onChange={v=>setCapF(f=>({...f,capex_growth_yoy:v}))} type="number" placeholder="+35"/>
-            <EiField label="Primary Use" value={capF.primary_use} onChange={v=>setCapF(f=>({...f,primary_use:v}))} options={["EUV_ramp","DRAM_HBM","Logic_advanced","NAND","Legacy_DUV","Mixed"]}/>
-            <EiField label="Notes (optional)" value={capF.notes} onChange={v=>setCapF(f=>({...f,notes:v}))} placeholder="optional" full/>
-            <button onClick={saveCap} disabled={saving} className="ei-save-btn" style={{flex:"1 1 100%"}}>{saving?"Saving…":"Save"}</button>
-          </div>
-        </EiFormBox>
-        {Object.entries(byPeriod(capexData)).map(([period,rows])=>(
-          <div key={period} style={{ background:"#070707", border:"1px solid #141414", borderRadius:10, padding:"12px 16px", marginBottom:10 }}>
-            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:10 }}>
-              <span style={{ fontSize:11, color:"#555", fontFamily:"monospace", fontWeight:700 }}>{period}</span>
-            </div>
-            <div style={{ display:"flex", gap:10, flexWrap:"wrap" }}>
-              {rows.map(r=>(
-                <div key={r.id} style={{ background:"#0a0a0a", borderRadius:7, padding:"8px 12px", minWidth:170, position:"relative" }}>
-                  <div style={{ position:"absolute", top:6, right:6, display:"flex", gap:4 }}>
-                    <button onClick={()=>setCapF({ period:r.period, company:r.company, capex_usd_b:r.capex_usd_b!=null?String(r.capex_usd_b):"", capex_growth_yoy:r.capex_growth_yoy!=null?String(r.capex_growth_yoy):"", primary_use:r.primary_use||"EUV_ramp", notes:r.notes||"" })}
-                      style={{ background:"transparent", border:"none", color:"#2a2a2a", cursor:"pointer", fontSize:11, lineHeight:1, padding:"2px 4px" }}
-                      onMouseEnter={e=>e.target.style.color="#f5c842"} onMouseLeave={e=>e.target.style.color="#2a2a2a"} title="Edit">✎</button>
-                    <button onClick={async()=>{ await SB.from("edge_intel_capex").delete().eq("id",r.id); load(); }}
-                      style={{ background:"transparent", border:"none", color:"#2a2a2a", cursor:"pointer", fontSize:14, lineHeight:1, padding:"2px 4px" }}
-                      onMouseEnter={e=>e.target.style.color="#ff6b6b"} onMouseLeave={e=>e.target.style.color="#2a2a2a"} title="Delete">×</button>
-                  </div>
-                  <div style={{ fontSize:12, fontFamily:"monospace", fontWeight:700, color:"#e0e0e0", paddingRight:16 }}>{r.company.replace(/_/g," ")}</div>
-                  <div style={{ fontSize:9, color:"#333", marginTop:2 }}>{r.primary_use?.replace(/_/g," ")}</div>
-                  {r.capex_usd_b && <div style={{ fontFamily:"monospace", fontSize:15, fontWeight:700, color:"#888", marginTop:4 }}>${r.capex_usd_b}B</div>}
-                  {r.capex_growth_yoy!=null && <div style={{ fontFamily:"monospace", fontSize:12, color:r.capex_growth_yoy>0?"#00e5a0":"#ff6b6b" }}>{r.capex_growth_yoy>0?"+":""}{r.capex_growth_yoy}% YoY</div>}
-                  {r.notes && <div style={{ fontSize:9, color:"#2a2a2a", marginTop:3 }}>{r.notes}</div>}
-                </div>
-              ))}
-            </div>
-          </div>
-        ))}
-        {capexData.length===0 && <div style={{ color:"#2a2a2a", fontFamily:"monospace", textAlign:"center", padding:40 }}>No capex data yet</div>}
-      </>}
-
-      {/* ── ASML TOOL PLAN ──────────────────────────────────────────────────── */}
-      {section==="tools" && <>
-        <EiFormBox title="🔧 ASML Tool Shipment Plan — quarterly (DUV / NXE / EXE)">
-          <div className="ei-form-row">
-            <EiField label="Period (e.g. Q2-2026)" value={toolF.period} onChange={v=>setToolF(f=>({...f,period:v}))} placeholder="Q2-2026"/>
-            <EiField label="Tool Type" value={toolF.tool_type} onChange={v=>setToolF(f=>({...f,tool_type:v}))} options={["DUV","NXE_low_NA","NXE_high_NA","EXE"]}/>
-            <EiField label="Units Planned" value={toolF.units_plan} onChange={v=>setToolF(f=>({...f,units_plan:v}))} type="number" placeholder="12"/>
-            <EiField label="ASP €M (auto)" value={toolF.asp_eur_m} onChange={v=>setToolF(f=>({...f,asp_eur_m:v}))} type="number"/>
+          <div className="ei-row">
             <div className="ei-field">
-              <span className="ei-label">Implied Rev</span>
-              <div style={{ fontFamily:"monospace", fontSize:16, fontWeight:700, color:"#00e5a0", padding:"10px 12px", background:"#0a0a0a", borderRadius:6, border:"1px solid #1a1a1a" }}>
-                €{((parseFloat(toolF.units_plan)||0)*(parseFloat(toolF.asp_eur_m)||0)).toFixed(0)}M
-              </div>
+              <span className="ei-label">Stock</span>
+              <select value={sigF.symbol} onChange={e=>setSigF(f=>({...f,symbol:e.target.value}))}>
+                {["ASML","TSM","MU","MRVL","AVGO","LRCX","KLAC","CLS","POWL","LLY","META","BAC"].map(s=><option key={s}>{s}</option>)}
+              </select>
             </div>
-            <EiField label="Notes (optional)" value={toolF.notes} onChange={v=>setToolF(f=>({...f,notes:v}))} placeholder="optional" full/>
-            <button onClick={saveTool} disabled={saving} className="ei-save-btn" style={{flex:"1 1 100%"}}>{saving?"Saving…":"Save"}</button>
-          </div>
-          <div style={{ marginTop:10, fontSize:10, color:"#2a2a2a" }}>
-            ASP reference: DUV €45M · NXE low-NA €230M · NXE high-NA €380M · EXE €380M — override if your data differs
-          </div>
-        </EiFormBox>
-        {Object.entries(byPeriod(toolData)).map(([period,rows])=>{
-          const total=rows.reduce((s,r)=>s+(r.implied_rev_eur_m||r.units_plan*r.asp_eur_m||0),0);
-          return (
-            <div key={period} style={{ background:"#070707", border:"1px solid #141414", borderRadius:10, padding:"12px 16px", marginBottom:10 }}>
-              <div style={{ display:"flex", justifyContent:"space-between", marginBottom:10 }}>
-                <span style={{ fontSize:11, color:"#555", fontFamily:"monospace", fontWeight:700 }}>{period}</span>
-                <span style={{ fontFamily:"monospace", fontSize:13, fontWeight:700, color:"#00e5a0" }}>€{total.toFixed(0)}M tool revenue implied</span>
-              </div>
-              <div style={{ display:"flex", gap:10, flexWrap:"wrap" }}>
-                {rows.map(r=>{
-                  const rev=r.implied_rev_eur_m||(r.units_plan*r.asp_eur_m)||0;
-                  const isHigh=r.tool_type==="EXE"||r.tool_type==="NXE_high_NA";
-                  return (
-                    <div key={r.id} style={{ background:"#0a0a0a", borderRadius:7, padding:"10px 14px", minWidth:160, border:`1px solid ${isHigh?"#f5c84222":"#141414"}`, position:"relative" }}>
-                      <div style={{ position:"absolute", top:6, right:6, display:"flex", gap:4 }}>
-                        <button onClick={()=>setToolF({ period:r.period, tool_type:r.tool_type, units_plan:String(r.units_plan), asp_eur_m:String(r.asp_eur_m), notes:r.notes||"" })}
-                          style={{ background:"transparent", border:"none", color:"#2a2a2a", cursor:"pointer", fontSize:11, lineHeight:1, padding:"2px 4px" }}
-                          onMouseEnter={e=>e.target.style.color="#f5c842"} onMouseLeave={e=>e.target.style.color="#2a2a2a"} title="Edit">✎</button>
-                        <button onClick={async()=>{ await SB.from("edge_intel_asml_tools").delete().eq("id",r.id); load(); }}
-                          style={{ background:"transparent", border:"none", color:"#2a2a2a", cursor:"pointer", fontSize:14, lineHeight:1, padding:"2px 4px" }}
-                          onMouseEnter={e=>e.target.style.color="#ff6b6b"} onMouseLeave={e=>e.target.style.color="#2a2a2a"} title="Delete">×</button>
-                      </div>
-                      <div style={{ fontSize:12, fontFamily:"monospace", fontWeight:700, color:isHigh?"#f5c842":"#888", paddingRight:16 }}>{r.tool_type.replace(/_/g," ")}</div>
-                      <div style={{ fontFamily:"monospace", fontSize:18, fontWeight:700, color:"#e0e0e0", marginTop:4 }}>{r.units_plan} units</div>
-                      <div style={{ fontFamily:"monospace", fontSize:13, color:"#00e5a0" }}>€{rev.toFixed(0)}M</div>
-                      <div style={{ fontSize:9, color:"#2a2a2a", marginTop:2 }}>@ €{r.asp_eur_m}M/unit</div>
-                      {r.notes && <div style={{ fontSize:9, color:"#444", marginTop:4, fontStyle:"italic" }}>{r.notes}</div>}
-                    </div>
-                  );
-                })}
-              </div>
+            <div className="ei-field">
+              <span className="ei-label">Phase 1 Growth %</span>
+              <input type="text" inputMode="decimal" value={sigF.implied_g1_pct}
+                onChange={e=>setSigF(f=>({...f,implied_g1_pct:e.target.value}))}
+                placeholder="e.g. 28" autoComplete="off" autoCorrect="off"/>
             </div>
-          );
-        })}
-        {toolData.length===0 && <div style={{ color:"#2a2a2a", fontFamily:"monospace", textAlign:"center", padding:40 }}>No tool plan data yet</div>}
-      </>}
+            <div className="ei-field">
+              <span className="ei-label">Phase 2 Growth %</span>
+              <input type="text" inputMode="decimal" value={sigF.implied_g2_pct}
+                onChange={e=>setSigF(f=>({...f,implied_g2_pct:e.target.value}))}
+                placeholder="e.g. 12" autoComplete="off" autoCorrect="off"/>
+            </div>
+          </div>
 
-      {/* ── ASML REVENUE CALC ───────────────────────────────────────────────── */}
-      {section==="calc" && <>
-        <div style={{ background:"#070707", border:"1px solid #00e5a022", borderRadius:10, padding:"16px 20px", marginBottom:16 }}>
-          <div style={{ fontSize:10, color:"#00e5a0", fontWeight:700, textTransform:"uppercase", letterSpacing:1, marginBottom:8 }}>
-            📐 ASML Implied Revenue — from your tool shipment intel
+          <div className="ei-row">
+            <div className="ei-field">
+              <span className="ei-label">Signal</span>
+              <select value={sigF.signal} onChange={e=>setSigF(f=>({...f,signal:e.target.value}))}>
+                {["bullish","neutral","bearish"].map(s=><option key={s}>{s}</option>)}
+              </select>
+            </div>
+            <div className="ei-field">
+              <span className="ei-label">vs Consensus</span>
+              <select value={sigF.vs_consensus} onChange={e=>setSigF(f=>({...f,vs_consensus:e.target.value}))}>
+                {["above","in_line","below"].map(s=><option key={s} value={s}>{s.replace("_"," ")}</option>)}
+              </select>
+            </div>
+            <div className="ei-field">
+              <span className="ei-label">Delta %</span>
+              <input type="text" inputMode="decimal" value={sigF.delta_pct}
+                onChange={e=>setSigF(f=>({...f,delta_pct:e.target.value}))}
+                placeholder="+12" autoComplete="off" autoCorrect="off"/>
+            </div>
           </div>
-          <div style={{ fontSize:11, color:"#444", lineHeight:1.8 }}>
-            Tool revenue + 28% installed base × 53% gross margin → implied EPS.
-            Then go to Growth Signals and enter the resulting implied growth vs consensus.
+
+          <div className="ei-row" style={{ marginBottom:12 }}>
+            <div className="ei-field" style={{ gridColumn:"1/-1" }}>
+              <span className="ei-label">Key Driver</span>
+              <input type="text" value={sigF.key_driver}
+                onChange={e=>setSigF(f=>({...f,key_driver:e.target.value}))}
+                placeholder="e.g. NXE Q3 +4 units above consensus"
+                autoComplete="off" autoCorrect="off" autoCapitalize="off"/>
+            </div>
+          </div>
+
+          <button className="ei-save" disabled={saving} onClick={saveSig}>{saving?"Saving…":"Save Signal"}</button>
+          <div style={{ marginTop:10, fontSize:11, color:"#2a2a2a", lineHeight:1.6 }}>
+            Signals auto-feed into Valuation tab — override auto-detected growth rates.
           </div>
         </div>
-        {Object.keys(asmlQ).length===0
-          ? <div style={{ color:"#2a2a2a", fontFamily:"monospace", textAlign:"center", padding:40 }}>Enter tool plan data first in the Tool Plan section</div>
-          : Object.values(asmlQ).map(q=>{
-              const ib=q.total*0.28;
-              const qRev=q.total+ib;
-              const aRev=qRev*4;
-              const aGP=aRev*0.53;
-              const netInc=aGP*0.83*0.83; // EBIT conv × net margin
-              const eps=netInc/405; // ~405M diluted shares
-              return (
-                <div key={q.period} style={{ background:"#070707", border:"1px solid #1a1a1a", borderRadius:10, padding:"16px", marginBottom:12 }}>
-                  <div style={{ fontFamily:"monospace", fontSize:13, color:"#555", fontWeight:700, marginBottom:12 }}>{q.period}</div>
-                  <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(170px, 1fr))", gap:10, marginBottom:12 }}>
-                    <EiCard label="Tool revenue (quarterly)" value={`€${q.total.toFixed(0)}M`} color="#888"/>
-                    <EiCard label="+ Installed base (~28%)" value={`€${ib.toFixed(0)}M`} color="#555"/>
-                    <EiCard label="= Quarterly total" value={`€${qRev.toFixed(0)}M`} color="#e0e0e0"/>
-                    <EiCard label="Annualised" value={`€${(aRev/1000).toFixed(1)}B`} color="#f5c842" sub="×4 quarters"/>
-                    <EiCard label="Gross profit (53%)" value={`€${(aGP/1000).toFixed(1)}B`} color="#888"/>
-                    <EiCard label="Implied EPS/yr" value={`€${eps.toFixed(0)}`} color={eps>30?"#00e5a0":"#f5c842"} sub="÷ 405M shares"/>
+
+        {signals.length===0
+          ? <div className="ei-empty">No signals yet — enter your first above</div>
+          : signals.map(s=>(
+            <div key={s.id} className="ei-signal" style={{ borderColor:`${sColor[s.signal]}33` }}>
+              <div className="ei-signal-hdr">
+                <div>
+                  <span style={{ fontFamily:"monospace", fontWeight:700, fontSize:20, color:"#e0e0e0" }}>{s.symbol}</span>
+                  <span className="ei-signal-badge" style={{ color:sColor[s.signal], background:sColor[s.signal]+"18" }}>{s.signal}</span>
+                </div>
+                <span style={{ fontSize:11, color:"#333" }}>{s.as_of_date}</span>
+              </div>
+              <div className="ei-signal-stats">
+                <div>
+                  <div style={{ fontSize:10, color:"#444", marginBottom:3 }}>Phase 1</div>
+                  <div style={{ fontFamily:"monospace", fontSize:18, fontWeight:700, color:"#f5c842" }}>{s.implied_g1_pct}%</div>
+                </div>
+                <div>
+                  <div style={{ fontSize:10, color:"#444", marginBottom:3 }}>Phase 2</div>
+                  <div style={{ fontFamily:"monospace", fontSize:18, fontWeight:700, color:"#555" }}>{s.implied_g2_pct??'—'}%</div>
+                </div>
+                <div>
+                  <div style={{ fontSize:10, color:"#444", marginBottom:3 }}>vs Consensus</div>
+                  <div style={{ fontSize:14, fontWeight:700, color:vColor[s.vs_consensus] }}>
+                    {s.vs_consensus==="above"?"▲ above":s.vs_consensus==="below"?"▼ below":"= in line"}
+                    {s.delta_pct!=null && <span style={{ marginLeft:6, fontSize:12 }}>({s.delta_pct>0?"+":""}{s.delta_pct}%)</span>}
                   </div>
-                  {/* Tool breakdown */}
-                  <div style={{ display:"flex", gap:8, flexWrap:"wrap", marginBottom:10 }}>
+                </div>
+              </div>
+              {s.key_driver && <div style={{ fontSize:12, color:"#555", fontStyle:"italic", marginBottom:4, lineHeight:1.5 }}>{s.key_driver}</div>}
+              <div className="ei-actions">
+                <button className="ei-btn-del" onClick={async()=>{ await SB.from("edge_intel_growth_signals").delete().eq("id",s.id); load(); }}>✕ Delete</button>
+              </div>
+            </div>
+          ))
+        }
+      </div>}
+
+      {/* ════ MARKET DATA ════ */}
+      {section==="market" && <div className="ei-section">
+        <div className="ei-form">
+          <div className="ei-form-title">📊 Add Market Data</div>
+          <div className="ei-row">
+            <div className="ei-field">
+              <span className="ei-label">Period</span>
+              <input type="text" value={mktF.period} onChange={e=>setMktF(f=>({...f,period:e.target.value}))}
+                placeholder="Apr-2026" autoComplete="off" autoCorrect="off"/>
+              <span className="ei-hint">e.g. Apr-2026</span>
+            </div>
+            <div className="ei-field">
+              <span className="ei-label">Segment</span>
+              <select value={mktF.segment} onChange={e=>setMktF(f=>({...f,segment:e.target.value}))}>
+                {["DRAM","NAND","Logic","WFE_total","HBM","Generic"].map(s=><option key={s} value={s}>{s}</option>)}
+              </select>
+            </div>
+          </div>
+          <div className="ei-row" style={{ marginBottom:10 }}>
+            <div className="ei-field">
+              <span className="ei-label">Metric</span>
+              <select value={mktF.metric} onChange={e=>setMktF(f=>({...f,metric:e.target.value}))}>
+                {["revenue_growth_yoy","capex_growth_yoy","wafer_starts_growth","revenue_qoq","capex_qoq"].map(s=><option key={s} value={s}>{s.replace(/_/g," ")}</option>)}
+              </select>
+            </div>
+            <div className="ei-field">
+              <span className="ei-label">Value (%)</span>
+              <input type="text" inputMode="decimal" value={mktF.value}
+                onChange={e=>setMktF(f=>({...f,value:e.target.value}))}
+                placeholder="35.0" autoComplete="off" autoCorrect="off"/>
+              <span className="ei-hint">percentage — e.g. 35 means +35%</span>
+            </div>
+          </div>
+          <div className="ei-row" style={{ marginBottom:12 }}>
+            <div className="ei-field" style={{ gridColumn:"1/-1" }}>
+              <span className="ei-label">Notes (optional)</span>
+              <input type="text" value={mktF.notes} onChange={e=>setMktF(f=>({...f,notes:e.target.value}))}
+                placeholder="context" autoComplete="off"/>
+            </div>
+          </div>
+          <button className="ei-save" disabled={saving} onClick={saveMkt}>{saving?"Saving…":"Save"}</button>
+        </div>
+
+        {marketData.length===0
+          ? <div className="ei-empty">No market data yet</div>
+          : Object.entries(byPeriod(marketData)).map(([period,rows])=>(
+            <div key={period} className="ei-period-block">
+              <div className="ei-period-hdr">
+                <span className="ei-period-lbl">{period}</span>
+              </div>
+              <div className="ei-card-grid">
+                {rows.map(r=>(
+                  <div key={r.id} className="ei-card">
+                    <div className="ei-card-lbl">{r.segment}</div>
+                    <div style={{ fontSize:10, color:"#333", marginBottom:6 }}>{r.metric.replace(/_/g," ")}</div>
+                    <div style={{ fontFamily:"monospace", fontSize:24, fontWeight:700, color:r.value>0?"#00e5a0":"#ff6b6b" }}>
+                      {r.value>0?"+":""}{r.value}%
+                    </div>
+                    {r.notes && <div style={{ fontSize:10, color:"#333", marginTop:6, fontStyle:"italic" }}>{r.notes}</div>}
+                    <div className="ei-actions">
+                      <button className="ei-btn-edit" onClick={()=>setMktF({ period:r.period, segment:r.segment, metric:r.metric, value:String(r.value), notes:r.notes||"" })}>✎ Edit</button>
+                      <button className="ei-btn-del" onClick={async()=>{ await SB.from("edge_intel_market").delete().eq("id",r.id); load(); }}>✕ Del</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))
+        }
+      </div>}
+
+      {/* ════ CAPEX ════ */}
+      {section==="capex" && <div className="ei-section">
+        <div className="ei-form">
+          <div className="ei-form-title">💰 Capex by Company</div>
+          <div className="ei-row">
+            <div className="ei-field">
+              <span className="ei-label">Period</span>
+              <input type="text" value={capF.period} onChange={e=>setCapF(f=>({...f,period:e.target.value}))}
+                placeholder="Q2-2026" autoComplete="off" autoCorrect="off"/>
+              <span className="ei-hint">e.g. Q2-2026</span>
+            </div>
+            <div className="ei-field">
+              <span className="ei-label">Company</span>
+              <select value={capF.company} onChange={e=>setCapF(f=>({...f,company:e.target.value}))}>
+                {["TSMC","Samsung","SK_Hynix","Micron","Intel","ASML_customer_total"].map(s=><option key={s} value={s}>{s.replace(/_/g," ")}</option>)}
+              </select>
+            </div>
+          </div>
+          <div className="ei-row" style={{ marginBottom:10 }}>
+            <div className="ei-field">
+              <span className="ei-label">Capex ($B)</span>
+              <input type="text" inputMode="decimal" value={capF.capex_usd_b}
+                onChange={e=>setCapF(f=>({...f,capex_usd_b:e.target.value}))}
+                placeholder="8.5" autoComplete="off" autoCorrect="off"/>
+            </div>
+            <div className="ei-field">
+              <span className="ei-label">YoY Growth %</span>
+              <input type="text" inputMode="decimal" value={capF.capex_growth_yoy}
+                onChange={e=>setCapF(f=>({...f,capex_growth_yoy:e.target.value}))}
+                placeholder="+35" autoComplete="off" autoCorrect="off"/>
+            </div>
+            <div className="ei-field">
+              <span className="ei-label">Primary Use</span>
+              <select value={capF.primary_use} onChange={e=>setCapF(f=>({...f,primary_use:e.target.value}))}>
+                {["EUV_ramp","DRAM_HBM","Logic_advanced","NAND","Legacy_DUV","Mixed"].map(s=><option key={s} value={s}>{s.replace(/_/g," ")}</option>)}
+              </select>
+            </div>
+          </div>
+          <div className="ei-row" style={{ marginBottom:12 }}>
+            <div className="ei-field" style={{ gridColumn:"1/-1" }}>
+              <span className="ei-label">Notes (optional)</span>
+              <input type="text" value={capF.notes} onChange={e=>setCapF(f=>({...f,notes:e.target.value}))}
+                placeholder="optional" autoComplete="off"/>
+            </div>
+          </div>
+          <button className="ei-save" disabled={saving} onClick={saveCap}>{saving?"Saving…":"Save"}</button>
+        </div>
+
+        {capexData.length===0
+          ? <div className="ei-empty">No capex data yet</div>
+          : Object.entries(byPeriod(capexData)).map(([period,rows])=>(
+            <div key={period} className="ei-period-block">
+              <div className="ei-period-hdr">
+                <span className="ei-period-lbl">{period}</span>
+              </div>
+              <div className="ei-card-grid">
+                {rows.map(r=>(
+                  <div key={r.id} className="ei-card">
+                    <div style={{ fontSize:13, fontWeight:700, color:"#e0e0e0", marginBottom:2 }}>{r.company.replace(/_/g," ")}</div>
+                    <div style={{ fontSize:10, color:"#333", marginBottom:8 }}>{r.primary_use?.replace(/_/g," ")}</div>
+                    {r.capex_usd_b!=null && <div style={{ fontFamily:"monospace", fontSize:22, fontWeight:700, color:"#888" }}>${r.capex_usd_b}B</div>}
+                    {r.capex_growth_yoy!=null && (
+                      <div style={{ fontFamily:"monospace", fontSize:14, fontWeight:700, color:r.capex_growth_yoy>0?"#00e5a0":"#ff6b6b", marginTop:2 }}>
+                        {r.capex_growth_yoy>0?"+":""}{r.capex_growth_yoy}% YoY
+                      </div>
+                    )}
+                    {r.notes && <div style={{ fontSize:10, color:"#333", marginTop:6, fontStyle:"italic" }}>{r.notes}</div>}
+                    <div className="ei-actions">
+                      <button className="ei-btn-edit" onClick={()=>setCapF({ period:r.period, company:r.company, capex_usd_b:r.capex_usd_b!=null?String(r.capex_usd_b):"", capex_growth_yoy:r.capex_growth_yoy!=null?String(r.capex_growth_yoy):"", primary_use:r.primary_use||"EUV_ramp", notes:r.notes||"" })}>✎ Edit</button>
+                      <button className="ei-btn-del" onClick={async()=>{ await SB.from("edge_intel_capex").delete().eq("id",r.id); load(); }}>✕ Del</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))
+        }
+      </div>}
+
+      {/* ════ TOOL PLAN ════ */}
+      {section==="tools" && <div className="ei-section">
+        <div className="ei-form">
+          <div className="ei-form-title">🔧 ASML Tool Shipment Plan</div>
+          <div className="ei-row">
+            <div className="ei-field">
+              <span className="ei-label">Quarter</span>
+              <input type="text" value={toolF.period} onChange={e=>setToolF(f=>({...f,period:e.target.value}))}
+                placeholder="Q2-2026" autoComplete="off" autoCorrect="off"/>
+              <span className="ei-hint">e.g. Q2-2026</span>
+            </div>
+            <div className="ei-field">
+              <span className="ei-label">Tool Type</span>
+              <select value={toolF.tool_type} onChange={e=>setToolF(f=>({...f,tool_type:e.target.value}))}>
+                {["DUV","NXE_low_NA","NXE_high_NA","EXE"].map(s=><option key={s} value={s}>{s.replace(/_/g," ")}</option>)}
+              </select>
+            </div>
+          </div>
+          <div className="ei-row" style={{ marginBottom:10 }}>
+            <div className="ei-field">
+              <span className="ei-label">Units Planned</span>
+              <input type="text" inputMode="decimal" value={toolF.units_plan}
+                onChange={e=>setToolF(f=>({...f,units_plan:e.target.value}))}
+                placeholder="12" autoComplete="off" autoCorrect="off"/>
+            </div>
+            <div className="ei-field">
+              <span className="ei-label">ASP (€M)</span>
+              <input type="text" inputMode="decimal" value={toolF.asp_eur_m}
+                onChange={e=>setToolF(f=>({...f,asp_eur_m:e.target.value}))}
+                autoComplete="off" autoCorrect="off"/>
+              <span className="ei-hint">Auto: DUV €45M · NXE €230M · EXE €380M</span>
+            </div>
+            <div className="ei-field">
+              <span className="ei-label">Implied Revenue</span>
+              <div className="ei-display">€{impliedRev.toFixed(0)}M</div>
+            </div>
+          </div>
+          <div className="ei-row" style={{ marginBottom:12 }}>
+            <div className="ei-field" style={{ gridColumn:"1/-1" }}>
+              <span className="ei-label">Notes (optional)</span>
+              <input type="text" value={toolF.notes} onChange={e=>setToolF(f=>({...f,notes:e.target.value}))}
+                placeholder="optional" autoComplete="off"/>
+            </div>
+          </div>
+          <button className="ei-save" disabled={saving} onClick={saveTool}>{saving?"Saving…":"Save"}</button>
+        </div>
+
+        {toolData.length===0
+          ? <div className="ei-empty">No tool plan data yet</div>
+          : Object.entries(byPeriod(toolData)).map(([period,rows])=>{
+            const total=rows.reduce((s,r)=>s+(r.implied_rev_eur_m||r.units_plan*r.asp_eur_m||0),0);
+            return (
+              <div key={period} className="ei-period-block">
+                <div className="ei-period-hdr">
+                  <span className="ei-period-lbl">{period}</span>
+                  <span className="ei-period-total">€{total.toFixed(0)}M</span>
+                </div>
+                <div className="ei-card-grid">
+                  {rows.map(r=>{
+                    const rev=r.implied_rev_eur_m||(r.units_plan*r.asp_eur_m)||0;
+                    const hi=r.tool_type==="EXE"||r.tool_type==="NXE_high_NA";
+                    return (
+                      <div key={r.id} className="ei-card" style={{ borderColor:hi?"#f5c84233":"#1a1a1a" }}>
+                        <div style={{ fontSize:12, fontWeight:700, color:hi?"#f5c842":"#888", marginBottom:4 }}>{r.tool_type.replace(/_/g," ")}</div>
+                        <div style={{ fontFamily:"monospace", fontSize:24, fontWeight:700, color:"#e0e0e0" }}>{r.units_plan}</div>
+                        <div style={{ fontSize:11, color:"#444", marginBottom:4 }}>units</div>
+                        <div style={{ fontFamily:"monospace", fontSize:14, color:"#00e5a0" }}>€{rev.toFixed(0)}M</div>
+                        <div style={{ fontSize:9, color:"#2a2a2a", marginTop:2 }}>@ €{r.asp_eur_m}M/unit</div>
+                        {r.notes && <div style={{ fontSize:10, color:"#333", marginTop:6, fontStyle:"italic" }}>{r.notes}</div>}
+                        <div className="ei-actions">
+                          <button className="ei-btn-edit" onClick={()=>setToolF({ period:r.period, tool_type:r.tool_type, units_plan:String(r.units_plan), asp_eur_m:String(r.asp_eur_m), notes:r.notes||"" })}>✎ Edit</button>
+                          <button className="ei-btn-del" onClick={async()=>{ await SB.from("edge_intel_asml_tools").delete().eq("id",r.id); load(); }}>✕ Del</button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })
+        }
+      </div>}
+
+      {/* ════ ASML CALC ════ */}
+      {section==="calc" && <div className="ei-section">
+        <div className="ei-form accent-green" style={{ borderColor:"#00e5a022" }}>
+          <div className="ei-form-title green">📐 ASML Implied Revenue</div>
+          <div style={{ fontSize:12, color:"#444", lineHeight:1.7 }}>
+            Tool revenue + 28% installed base × 53% gross margin → implied annual EPS.
+            After calculating, add a ⚡ Growth Signal to feed it into Valuation.
+          </div>
+        </div>
+
+        {Object.keys(asmlQ).length===0
+          ? <div className="ei-empty">Add tool plan data first (🔧 Tool Plan)</div>
+          : Object.values(asmlQ).map(q=>{
+              const ib=q.total*0.28, qRev=q.total+ib, aRev=qRev*4;
+              const aGP=aRev*0.53, netInc=aGP*0.83*0.83, eps=netInc/405;
+              return (
+                <div key={q.period} className="ei-period-block">
+                  <div className="ei-period-hdr">
+                    <span className="ei-period-lbl">{q.period}</span>
+                    <span style={{ fontFamily:"monospace", fontSize:14, fontWeight:700, color:eps>30?"#00e5a0":"#f5c842" }}>€{eps.toFixed(0)} EPS/yr</span>
+                  </div>
+                  <div className="ei-card-grid">
+                    {[
+                      ["Tool revenue (quarterly)", `€${q.total.toFixed(0)}M`, "#888"],
+                      ["+ Installed base (28%)", `€${ib.toFixed(0)}M`, "#555"],
+                      ["= Quarterly total", `€${qRev.toFixed(0)}M`, "#e0e0e0"],
+                      ["Annualised (×4)", `€${(aRev/1000).toFixed(1)}B`, "#f5c842"],
+                      ["Gross profit (53%)", `€${(aGP/1000).toFixed(1)}B`, "#888"],
+                      ["Implied EPS / yr", `€${eps.toFixed(0)}`, eps>30?"#00e5a0":"#f5c842"],
+                    ].map(([lbl,val,color])=>(
+                      <div key={lbl} className="ei-card">
+                        <div className="ei-card-lbl">{lbl}</div>
+                        <div className="ei-card-val" style={{ color }}>{val}</div>
+                      </div>
+                    ))}
+                  </div>
+                  <div style={{ marginTop:10, display:"flex", gap:6, flexWrap:"wrap" }}>
                     {q.items.map(b=>(
-                      <div key={b.type} style={{ fontSize:10, color:"#444", background:"#0a0a0a", borderRadius:5, padding:"4px 10px", fontFamily:"monospace" }}>
+                      <div key={b.type} style={{ fontSize:11, color:"#444", background:"#0c0c0c", borderRadius:6, padding:"6px 12px", fontFamily:"monospace", border:"1px solid #1a1a1a" }}>
                         {b.type.replace(/_/g," ")}: {b.units}u × €{b.asp}M = <span style={{ color:"#00e5a0" }}>€{b.rev.toFixed(0)}M</span>
                       </div>
                     ))}
                   </div>
-                  <div style={{ fontSize:10, color:"#2a2a2a", lineHeight:1.6 }}>
-                    Model: tool rev + 28% installed base × 53% GM × 83% EBIT conversion × 83% net income ratio ÷ 405M shares.
-                    After calculating, enter the implied growth in the Growth Signals tab to feed into the Valuation model.
+                  <div style={{ marginTop:10, fontSize:11, color:"#2a2a2a", lineHeight:1.7 }}>
+                    Model: tool rev + 28% installed base × 53% GM × 83% EBIT × 83% net ÷ 405M shares. Go to ⚡ Signals to feed into Valuation.
                   </div>
                 </div>
               );
             })
         }
-      </>}
+      </div>}
     </div>
   );
 }
@@ -2883,97 +3115,65 @@ export default function App() {
         .stat-card-label { font-size: 9px; color: #333; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px; }
         .stat-card-value { font-family: monospace; font-size: 16px; font-weight: 700; }
 
-        /* ── Edge Intel forms ── */
-        .ei-form-row { display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-end; }
-        .ei-field { display: flex; flex-direction: column; gap: 6px; flex: 1 1 140px; min-width: 0; }
-        .ei-field.wide { flex: 2 1 200px; }
-        .ei-field.full { flex: 1 1 100%; }
+        /* ── Edge Intel — mobile-first ── */
+        .ei-nav { display:flex; gap:8px; overflow-x:auto; padding-bottom:4px; -webkit-overflow-scrolling:touch; scrollbar-width:none; margin-bottom:16px; }
+        .ei-nav::-webkit-scrollbar { display:none; }
+        .ei-nav-btn { flex-shrink:0; padding:10px 18px; border-radius:10px; border:1.5px solid #222; background:#0c0c0c; color:#555; font-weight:500; font-size:13px; cursor:pointer; white-space:nowrap; min-height:44px; touch-action:manipulation; -webkit-tap-highlight-color:transparent; }
+        .ei-nav-btn.active { border-color:#00e5a066; background:#00e5a012; color:#00e5a0; font-weight:700; }
+        /* Form container */
+        .ei-form { background:#0c0c0c; border:1.5px solid #1e1e1e; border-radius:14px; padding:16px; margin-bottom:12px; }
+        .ei-form.accent-green { border-color:#00e5a022; }
+        .ei-form-title { font-size:11px; font-weight:700; color:#444; text-transform:uppercase; letter-spacing:0.8px; margin-bottom:14px; }
+        .ei-form-title.green { color:#00e5a0; }
+        /* Grid — single column on mobile, expands on desktop */
+        .ei-row { display:grid; grid-template-columns:1fr; gap:10px; margin-bottom:10px; }
+        @media(min-width:520px){ .ei-row { grid-template-columns:1fr 1fr; } }
+        @media(min-width:800px){ .ei-row { grid-template-columns:1fr 1fr 1fr; } }
+        .ei-row.cols2 { grid-template-columns:1fr 1fr; }
+        .ei-span { grid-column:1 / -1; }
+        /* Field */
+        .ei-field { display:flex; flex-direction:column; gap:6px; }
+        .ei-label { font-size:11px; font-weight:600; color:#666; text-transform:uppercase; letter-spacing:0.7px; }
+        .ei-hint { font-size:10px; color:#2a2a2a; }
         .ei-field input, .ei-field select {
-          width: 100%;
-          background: #111;
-          border: 1px solid #2a2a2a;
-          border-radius: 10px;
-          color: #e0e0e0;
-          padding: 13px 14px;
-          font-size: 16px;
-          font-family: monospace;
-          line-height: 1.2;
-          min-height: 48px;
-          -webkit-appearance: none;
-          appearance: none;
-          touch-action: manipulation;
+          width:100%; background:#141414; border:1.5px solid #252525; border-radius:10px;
+          color:#e0e0e0; padding:13px 14px; font-size:16px; min-height:50px;
+          box-sizing:border-box; -webkit-appearance:none; appearance:none;
+          touch-action:manipulation; font-family:inherit;
         }
-        .ei-field input:focus, .ei-field select:focus {
-          border-color: #00e5a055;
-          outline: none;
-          background: #151515;
-        }
+        .ei-field input:focus, .ei-field select:focus { border-color:#00e5a055; outline:none; background:#181818; }
         .ei-field select {
-          background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8'%3E%3Cpath d='M0 0l6 8 6-8z' fill='%23666'/%3E%3C/svg%3E");
-          background-repeat: no-repeat;
-          background-position: right 14px center;
-          padding-right: 36px;
-          cursor: pointer;
+          background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8'%3E%3Cpath d='M0 0l6 8 6-8z' fill='%23666'/%3E%3C/svg%3E");
+          background-repeat:no-repeat; background-position:right 14px center; padding-right:36px; cursor:pointer;
         }
-        .ei-label { font-size: 11px; color: #666; text-transform: uppercase; letter-spacing: 0.8px; font-weight: 600; }
-        .ei-save-btn {
-          flex: 1 1 100%;
-          background: #00e5a0;
-          border: none;
-          border-radius: 10px;
-          color: #000;
-          padding: 15px 24px;
-          font-size: 16px;
-          font-weight: 700;
-          cursor: pointer;
-          margin-top: 4px;
-          min-height: 52px;
-          touch-action: manipulation;
-          -webkit-tap-highlight-color: transparent;
-        }
-        .ei-save-btn:active { opacity: 0.8; transform: scale(0.99); }
-        .ei-save-btn:disabled { opacity: 0.5; }
-        .ei-nav {
-          display: flex;
-          gap: 6px;
-          overflow-x: auto;
-          padding-bottom: 6px;
-          -webkit-overflow-scrolling: touch;
-          scrollbar-width: none;
-          margin-bottom: 16px;
-        }
-        .ei-nav::-webkit-scrollbar { display: none; }
-        .ei-nav-btn {
-          flex-shrink: 0;
-          border-radius: 8px;
-          padding: 10px 16px;
-          cursor: pointer;
-          font-size: 13px;
-          font-weight: 600;
-          white-space: nowrap;
-          border: 1px solid #222;
-          background: #0a0a0a;
-          color: #555;
-          min-height: 44px;
-          touch-action: manipulation;
-          -webkit-tap-highlight-color: transparent;
-        }
-        .ei-nav-btn.active { background: #00e5a011; border-color: #00e5a044; color: #00e5a0; }
-        .ei-nav-btn:active { opacity: 0.7; }
-        .ei-formbox {
-          background: #070707;
-          border-radius: 10px;
-          padding: 16px;
-          margin-bottom: 16px;
-        }
-        .ei-formbox-title {
-          font-size: 10px;
-          font-weight: 700;
-          text-transform: uppercase;
-          letter-spacing: 1px;
-          margin-bottom: 14px;
-        }
-        .ei-hint { margin-top: 10px; font-size: 10px; color: #2a2a2a; line-height: 1.6; }
+        .ei-display { background:#00e5a00a; border:1.5px solid #00e5a022; border-radius:10px; padding:13px 14px; min-height:50px; display:flex; align-items:center; font-family:monospace; font-size:20px; font-weight:700; color:#00e5a0; }
+        /* Save button */
+        .ei-save { width:100%; background:#00e5a0; border:none; border-radius:12px; color:#000; padding:15px; font-size:16px; font-weight:700; cursor:pointer; min-height:52px; margin-top:4px; touch-action:manipulation; -webkit-tap-highlight-color:transparent; }
+        .ei-save:disabled { background:#1a1a1a; color:#444; }
+        .ei-save:active { opacity:0.85; }
+        /* Data section */
+        .ei-section { display:flex; flex-direction:column; gap:10px; }
+        .ei-period-block { background:#111; border:1.5px solid #1e1e1e; border-radius:12px; padding:14px; }
+        .ei-period-hdr { display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; }
+        .ei-period-lbl { font-family:monospace; font-size:12px; font-weight:700; color:#444; }
+        .ei-period-total { font-family:monospace; font-size:13px; font-weight:700; color:#00e5a0; }
+        .ei-card-grid { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+        @media(min-width:520px){ .ei-card-grid { grid-template-columns:repeat(3,1fr); } }
+        @media(min-width:800px){ .ei-card-grid { grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); } }
+        .ei-card { background:#0c0c0c; border-radius:10px; padding:12px; border:1px solid #1a1a1a; }
+        .ei-card-lbl { font-size:9px; color:#333; text-transform:uppercase; letter-spacing:0.8px; margin-bottom:5px; }
+        .ei-card-val { font-family:monospace; font-size:16px; font-weight:700; }
+        .ei-card-sub { font-size:9px; color:#2a2a2a; margin-top:3px; }
+        /* Record actions */
+        .ei-actions { display:flex; gap:8px; padding-top:10px; border-top:1px solid #1a1a1a; margin-top:10px; }
+        .ei-btn-edit { flex:1; padding:11px 0; border-radius:8px; font-size:13px; font-weight:600; cursor:pointer; border:1.5px solid #252525; background:#141414; color:#888; min-height:44px; touch-action:manipulation; }
+        .ei-btn-del { flex:1; padding:11px 0; border-radius:8px; font-size:13px; font-weight:600; cursor:pointer; border:1.5px solid #ff6b6b22; background:#ff6b6b08; color:#ff6b6b; min-height:44px; touch-action:manipulation; }
+        /* Signal cards */
+        .ei-signal { border-radius:12px; padding:14px; border:1.5px solid #1e1e1e; }
+        .ei-signal-hdr { display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:12px; }
+        .ei-signal-badge { display:inline-block; font-size:11px; font-weight:700; border-radius:6px; padding:3px 10px; text-transform:uppercase; margin-left:10px; vertical-align:middle; }
+        .ei-signal-stats { display:flex; gap:20px; flex-wrap:wrap; margin-bottom:8px; }
+        .ei-empty { color:#2a2a2a; font-family:monospace; text-align:center; padding:40px 0; font-size:13px; }
 
         /* ── Valuation assumption inputs ── */
         .val-input {
