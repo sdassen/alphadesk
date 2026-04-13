@@ -1657,11 +1657,24 @@ function ValuationTab({ positions, shortlist }) {
         useForwardPEBasis = false;
       } else {
         // Forward basis — most stocks: platform, growth, equipment
-        // forwardEps reflects where the company is going, not where it has been
-        baseEps  = forwardEps
-                || (currentPrice && forwardPE ? currentPrice / forwardPE : null)
-                || (trailingEps && trailingEps > 0 ? trailingEps : null);
-        anchorPE = forwardPE || trailingPE || 20;
+        //
+        // SANITY CHECK: if forwardEps is >4× trailing EPS, Yahoo is likely
+        // reporting a multi-year forward (e.g. MU FY2027 $98 vs trailing $21).
+        // In that case, fall back to trailing EPS — the last known real earnings.
+        // The PE bands from config already encode the normalized valuation range.
+        const fwdEpsDistorted = forwardEps && trailingEps && trailingEps > 0
+          && forwardEps > trailingEps * 4;
+
+        if (fwdEpsDistorted) {
+          // Trailing is the last real data point; config PE range handles the rest
+          baseEps = (trailingEps && trailingEps > 0) ? trailingEps
+                  : (currentPrice && trailingPE ? currentPrice / trailingPE : null);
+        } else {
+          baseEps = forwardEps
+                  || (currentPrice && forwardPE ? currentPrice / forwardPE : null)
+                  || (trailingEps && trailingEps > 0 ? trailingEps : null);
+        }
+        anchorPE = trailingPE || forwardPE || 20;
       }
 
       // PE bands from config — absolute values, not multipliers of current PE
