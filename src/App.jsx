@@ -282,18 +282,47 @@ const db = {
   },
 
   async getGrowthForecast(symbol) {
-    // Look up custom forecast: symbol-specific first, then sector, then null (global)
-    const { data } = await SB.from("growth_forecasts")
-      .select("*")
-      .or(`symbol.eq.${symbol},symbol.is.null`)
-      .or("valid_until.is.null,valid_until.gte." + new Date().toISOString().split("T")[0])
-      .order("symbol", { ascending: false }) // symbol-specific first
-      .order("created_at", { ascending: false });
-    if (!data?.length) return null;
-    // Prefer symbol-specific over sector over global
-    return data.find(r => r.symbol === symbol)
-      || data.find(r => r.sector === "semiconductor")
-      || data[0];
+    // Priority: Edge Intel growth signals (most recent) > manual growth_forecasts
+    // Edge Intel signals are what the user enters from their ASML PDF reports
+    const today = new Date().toISOString().split("T")[0];
+    const thirtyDaysAgo = new Date(Date.now() - 30*24*60*60*1000).toISOString().split("T")[0];
+
+    const [{ data: edgeData }, { data: manualData }] = await Promise.all([
+      // Edge Intel: most recent signal for this symbol (within last 30 days)
+      SB.from("edge_intel_growth_signals")
+        .select("*")
+        .eq("symbol", symbol)
+        .gte("as_of_date", thirtyDaysAgo)
+        .order("as_of_date", { ascending: false })
+        .limit(1),
+      // Manual forecasts (growth_forecasts table, older system)
+      SB.from("growth_forecasts")
+        .select("*")
+        .or(`symbol.eq.${symbol},symbol.is.null`)
+        .or("valid_until.is.null,valid_until.gte." + today)
+        .order("symbol", { ascending: false })
+        .order("created_at", { ascending: false }),
+    ]);
+
+    // Edge Intel signal takes priority — map to same shape as growth_forecasts
+    if (edgeData?.length) {
+      const sig = edgeData[0];
+      return {
+        g1_pct: sig.implied_g1_pct,
+        g2_pct: sig.implied_g2_pct,
+        source: "⚡ Edge Intel",
+        note: sig.key_driver,
+        signal: sig.signal,
+        vs_consensus: sig.vs_consensus,
+        from_edge_intel: true,
+      };
+    }
+
+    // Fallback: manual growth_forecasts
+    if (!manualData?.length) return null;
+    return manualData.find(r => r.symbol === symbol)
+      || manualData.find(r => r.sector === "semiconductor")
+      || manualData[0];
   },
   async saveGrowthForecast(symbol, g1_pct, g2_pct, source, note) {
     await SB.from("growth_forecasts").insert({
@@ -1844,9 +1873,10 @@ function ValuationTab({ positions, shortlist }) {
               {data.cfgNote && <div style={{ fontSize: 9, color: "#2a2a2a", marginTop: 3 }}>{data.cfgNote}</div>}
             </div>
             {forecast && (
-              <div style={{ fontSize: 10, background: "#00e5a011", border: "1px solid #00e5a033", borderRadius: 5, padding: "3px 8px", color: "#00e5a0" }}>
-                ✓ Custom forecast active: {forecast.source}
-                {forecast.note && <span style={{ color: "#444", marginLeft: 6 }}>{forecast.note}</span>}
+              <div style={{ fontSize: 10, background: forecast.from_edge_intel ? "#f5c84211" : "#00e5a011", border: `1px solid ${forecast.from_edge_intel ? "#f5c84233" : "#00e5a033"}`, borderRadius: 5, padding: "4px 10px", color: forecast.from_edge_intel ? "#f5c842" : "#00e5a0" }}>
+                {forecast.from_edge_intel ? "⚡" : "✓"} {forecast.source}
+                {forecast.note && <span style={{ color: "#555", marginLeft: 6 }}>— {forecast.note}</span>}
+                {forecast.signal && <span style={{ marginLeft: 8, textTransform: "uppercase", fontWeight: 700, color: forecast.signal === "bullish" ? "#00e5a0" : forecast.signal === "bearish" ? "#ff6b6b" : "#888" }}>{forecast.signal}</span>}
               </div>
             )}
           </div>
@@ -1872,10 +1902,19 @@ function ValuationTab({ positions, shortlist }) {
               💾 Save forecast
             </button>
           </div>
-          <div style={{ marginTop: 10, fontSize: 10, color: "#2a2a2a", lineHeight: 1.6 }}>
-            Phase 1 = years 1–{Math.min(growthYears, 3)} · Phase 2 = years {Math.min(growthYears, 3)+1}–{growthYears} (terminal normalisation)
-            {" "}· PE basis: {data.useForwardPEBasis ? "forward PE (cyclical stock)" : `${data.histPEsCount} historical data points`}
-            {" "}· Bear {data.peBear.toFixed(0)}× / Base {data.peBase.toFixed(0)}× / Bull {data.peBull.toFixed(0)}×
+          <div style={{ marginTop: 10, fontSize: 10, color: "#333", lineHeight: 1.7 }}>
+            <span style={{ color: "#2a2a2a" }}>Phase 1 = yr 1–{Math.min(growthYears, 3)} · Phase 2 = yr {Math.min(growthYears, 3)+1}–{growthYears} · PE {data.peBear.toFixed(0)}/{data.peBase.toFixed(0)}/{data.peBull.toFixed(0)}× (bear/base/bull)</span>
+            {forecast?.from_edge_intel && (
+              <div style={{ marginTop: 6, padding: "6px 10px", background: "#f5c84211", border: "1px solid #f5c84222", borderRadius: 6, color: "#f5c842" }}>
+                ⚡ Growth driven by Edge Intel signal from {forecast.as_of_date || "recent"}.
+                To update: go to Edge Intel → Growth Signals → add new signal for {data.symbol}.
+              </div>
+            )}
+            {!forecast && (
+              <div style={{ marginTop: 6, color: "#2a2a2a" }}>
+                No Edge Intel signal active. Add one in ⚡ Edge Intel → Growth Signals to override with your ASML data.
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -2083,6 +2122,64 @@ function ValuationTab({ positions, shortlist }) {
     </div>
   );
 }
+// ── Edge Intel shared components (top-level — never re-defined on render) ────
+function EiNavBtn({ id, label, activeSection, onSelect }) {
+  return (
+    <button
+      onClick={() => onSelect(id)}
+      className={"ei-nav-btn" + (activeSection === id ? " active" : "")}
+    >
+      {label}
+    </button>
+  );
+}
+
+function EiField({ label, value, onChange, type="text", options=null, placeholder="", full=false, wide=false }) {
+  return (
+    <div className={"ei-field" + (full ? " full" : "") + (wide ? " wide" : "")}>
+      <span className="ei-label">{label}</span>
+      {options
+        ? <select
+            value={value}
+            onChange={e => onChange(e.target.value)}
+          >
+            {options.map(o => <option key={o} value={o}>{o}</option>)}
+          </select>
+        : <input
+            type={type === "number" ? "text" : type}
+            inputMode={type === "number" ? "decimal" : "text"}
+            value={value}
+            onChange={e => onChange(e.target.value)}
+            placeholder={placeholder}
+            autoComplete="off"
+            autoCorrect="off"
+            autoCapitalize="off"
+            spellCheck={false}
+          />
+      }
+    </div>
+  );
+}
+
+function EiCard({ label, value, color="#888", sub="" }) {
+  return (
+    <div style={{ background:"#111", borderRadius:7, padding:"10px 12px" }}>
+      <div style={{ fontSize:9, color:"#333", textTransform:"uppercase", letterSpacing:0.8, marginBottom:5 }}>{label}</div>
+      <div style={{ fontFamily:"monospace", fontSize:15, fontWeight:700, color }}>{value}</div>
+      {sub && <div style={{ fontSize:9, color:"#2a2a2a", marginTop:3 }}>{sub}</div>}
+    </div>
+  );
+}
+
+function EiFormBox({ title, color="#f5c842", children }) {
+  return (
+    <div style={{ background:"#070707", border:`1px solid ${color}22`, borderRadius:10, padding:"16px", marginBottom:16 }}>
+      <div style={{ fontSize:10, color, fontWeight:700, textTransform:"uppercase", letterSpacing:1, marginBottom:14 }}>{title}</div>
+      {children}
+    </div>
+  );
+}
+
 // ── Edge Intel Tab ────────────────────────────────────────────────────────────
 // Manually entered semiconductor market intelligence from PDF reports.
 // 5 sections: Growth Signals / Market Data / Capex / ASML Tool Plan / ASML Revenue Calc
@@ -2156,77 +2253,36 @@ function EdgeIntelTab() {
   const sColor = { bullish:"#00e5a0", neutral:"#f5c842", bearish:"#ff6b6b" };
   const vColor = { above:"#00e5a0", in_line:"#f5c842", below:"#ff6b6b" };
 
-  // Mobile-friendly field — uses CSS classes, no fixed widths
-  const F = ({ label, value, onChange, type="text", options=null, placeholder="", full=false }) => (
-    <div className={"ei-field" + (full?" full":"")}>
-      <span className="ei-label">{label}</span>
-      {options
-        ? <select value={value} onChange={e=>onChange(e.target.value)}>
-            {options.map(o=><option key={o}>{o}</option>)}
-          </select>
-        : <input type={type} value={value} onChange={e=>onChange(e.target.value)} placeholder={placeholder}
-            inputMode={type==="number"?"decimal":undefined}/>
-      }
-    </div>
-  );
-
-  const Btn = ({ label="Save", onClick }) => (
-    <div style={{ flex:"1 1 100%" }}>
-      <button onClick={onClick} disabled={saving} className="ei-save-btn">
-        {saving?"Saving…":label}
-      </button>
-    </div>
-  );
-
-  const NavBtn = ({ id, label }) => (
-    <button onClick={()=>setSection(id)} className={"ei-nav-btn"+(section===id?" active":"")}>{label}</button>
-  );
-
-  const Card = ({ label, value, color="#888", sub="" }) => (
-    <div style={{ background:"#111", borderRadius:7, padding:"10px 12px" }}>
-      <div style={{ fontSize:9, color:"#333", textTransform:"uppercase", letterSpacing:0.8, marginBottom:5 }}>{label}</div>
-      <div style={{ fontFamily:"monospace", fontSize:15, fontWeight:700, color }}>{value}</div>
-      {sub && <div style={{ fontSize:9, color:"#2a2a2a", marginTop:3 }}>{sub}</div>}
-    </div>
-  );
-
-  const FormBox = ({ title, color="#f5c842", children }) => (
-    <div style={{ background:"#070707", border:`1px solid ${color}22`, borderRadius:10, padding:"14px 16px", marginBottom:16 }}>
-      <div style={{ fontSize:10, color, fontWeight:700, textTransform:"uppercase", letterSpacing:1, marginBottom:12 }}>{title}</div>
-      {children}
-    </div>
-  );
-
   if (loading) return <div style={{ display:"flex", justifyContent:"center", padding:60 }}><Spinner size={24}/></div>;
 
   return (
     <div>
       {/* Nav — horizontal scroll on mobile */}
       <div className="ei-nav" style={{ marginBottom:20 }}>
-        <NavBtn id="signals"   label="⚡ Growth Signals"/>
-        <NavBtn id="market"    label="📊 Market Data"/>
-        <NavBtn id="capex"     label="💰 Capex by Company"/>
-        <NavBtn id="tools"     label="🔧 ASML Tool Plan"/>
-        <NavBtn id="calc"      label="📐 ASML Revenue Calc"/>
+        <EiNavBtn id="signals" label="⚡ Signals"      activeSection={section} onSelect={setSection}/>
+        <EiNavBtn id="market"  label="📊 Market"       activeSection={section} onSelect={setSection}/>
+        <EiNavBtn id="capex"   label="💰 Capex"        activeSection={section} onSelect={setSection}/>
+        <EiNavBtn id="tools"   label="🔧 Tool Plan"    activeSection={section} onSelect={setSection}/>
+        <EiNavBtn id="calc"    label="📐 ASML Calc"    activeSection={section} onSelect={setSection}/>
       </div>
 
       {/* ── GROWTH SIGNALS ──────────────────────────────────────────────────── */}
       {section==="signals" && <>
-        <FormBox title="⚡ Add Growth Signal — derived from your edge intel" color="#00e5a0">
+        <EiFormBox title="⚡ Add Growth Signal — derived from your edge intel" color="#00e5a0">
           <div className="ei-form-row">
-            <F label="Stock" value={sigF.symbol} onChange={v=>setSigF(f=>({...f,symbol:v}))} options={["ASML","TSM","MU","MRVL","CLS","POWL","LLY","META","BAC"]}/>
-            <F label="Implied G1 %" value={sigF.implied_g1_pct} onChange={v=>setSigF(f=>({...f,implied_g1_pct:v}))} type="number" placeholder="e.g. 28"/>
-            <F label="Implied G2 %" value={sigF.implied_g2_pct} onChange={v=>setSigF(f=>({...f,implied_g2_pct:v}))} type="number" placeholder="e.g. 12"/>
-            <F label="Signal" value={sigF.signal} onChange={v=>setSigF(f=>({...f,signal:v}))} options={["bullish","neutral","bearish"]}/>
-            <F label="vs Consensus" value={sigF.vs_consensus} onChange={v=>setSigF(f=>({...f,vs_consensus:v}))} options={["above","in_line","below"]}/>
-            <F label="Delta %" value={sigF.delta_pct} onChange={v=>setSigF(f=>({...f,delta_pct:v}))} type="number" placeholder="+12"/>
-            <F label="Key driver" value={sigF.key_driver} onChange={v=>setSigF(f=>({...f,key_driver:v}))} placeholder="e.g. NXE Q3 +4 units vs consensus" full/>
-            <Btn onClick={saveSig}/>
+            <EiField label="Stock" value={sigF.symbol} onChange={v=>setSigF(f=>({...f,symbol:v}))} options={["ASML","TSM","MU","MRVL","AVGO","LRCX","KLAC","CLS","POWL","LLY","META","BAC"]}/>
+            <EiField label="Implied G1 %" value={sigF.implied_g1_pct} onChange={v=>setSigF(f=>({...f,implied_g1_pct:v}))} type="number" placeholder="e.g. 28"/>
+            <EiField label="Implied G2 %" value={sigF.implied_g2_pct} onChange={v=>setSigF(f=>({...f,implied_g2_pct:v}))} type="number" placeholder="e.g. 12"/>
+            <EiField label="Signal" value={sigF.signal} onChange={v=>setSigF(f=>({...f,signal:v}))} options={["bullish","neutral","bearish"]}/>
+            <EiField label="vs Consensus" value={sigF.vs_consensus} onChange={v=>setSigF(f=>({...f,vs_consensus:v}))} options={["above","in_line","below"]}/>
+            <EiField label="Delta %" value={sigF.delta_pct} onChange={v=>setSigF(f=>({...f,delta_pct:v}))} type="number" placeholder="+12"/>
+            <EiField label="Key driver" value={sigF.key_driver} onChange={v=>setSigF(f=>({...f,key_driver:v}))} placeholder="e.g. NXE Q3 +4 units vs consensus" full/>
+            <button onClick={saveSig} disabled={saving} className="ei-save-btn" style={{flex:"1 1 100%"}}>{saving?"Saving…":"Save"}</button>
           </div>
           <div style={{ marginTop:10, fontSize:10, color:"#2a2a2a" }}>
             Signals auto-feed into the Valuation tab — when a signal exists for a stock it overrides the auto-detected growth rate.
           </div>
-        </FormBox>
+        </EiFormBox>
 
         {signals.length===0
           ? <div style={{ color:"#2a2a2a", fontFamily:"monospace", textAlign:"center", padding:40 }}>No signals yet. Enter your first intel above after reading the monthly report.</div>
@@ -2260,16 +2316,16 @@ function EdgeIntelTab() {
 
       {/* ── MARKET DATA ─────────────────────────────────────────────────────── */}
       {section==="market" && <>
-        <FormBox title="📊 Add Market Data — monthly revenue + capex growth per segment">
+        <EiFormBox title="📊 Add Market Data — monthly revenue + capex growth per segment">
           <div className="ei-form-row">
-            <F label="Period (e.g. Apr-2026)" value={mktF.period} onChange={v=>setMktF(f=>({...f,period:v}))} placeholder="Apr-2026"/>
-            <F label="Segment" value={mktF.segment} onChange={v=>setMktF(f=>({...f,segment:v}))} options={["DRAM","NAND","Logic","WFE_total","Generic","HBM"]}/>
-            <F label="Metric" value={mktF.metric} onChange={v=>setMktF(f=>({...f,metric:v}))} options={["revenue_growth_yoy","capex_growth_yoy","wafer_starts_growth","revenue_qoq","capex_qoq"]}/>
-            <F label="Value (%)" value={mktF.value} onChange={v=>setMktF(f=>({...f,value:v}))} type="number" placeholder="35.0"/>
-            <F label="Notes (optional)" value={mktF.notes} onChange={v=>setMktF(f=>({...f,notes:v}))} placeholder="context" full/>
-            <Btn onClick={saveMkt}/>
+            <EiField label="Period (e.g. Apr-2026)" value={mktF.period} onChange={v=>setMktF(f=>({...f,period:v}))} placeholder="Apr-2026"/>
+            <EiField label="Segment" value={mktF.segment} onChange={v=>setMktF(f=>({...f,segment:v}))} options={["DRAM","NAND","Logic","WFE_total","Generic","HBM"]}/>
+            <EiField label="Metric" value={mktF.metric} onChange={v=>setMktF(f=>({...f,metric:v}))} options={["revenue_growth_yoy","capex_growth_yoy","wafer_starts_growth","revenue_qoq","capex_qoq"]}/>
+            <EiField label="Value (%)" value={mktF.value} onChange={v=>setMktF(f=>({...f,value:v}))} type="number" placeholder="35.0"/>
+            <EiField label="Notes (optional)" value={mktF.notes} onChange={v=>setMktF(f=>({...f,notes:v}))} placeholder="context" full/>
+            <button onClick={saveMkt} disabled={saving} className="ei-save-btn" style={{flex:"1 1 100%"}}>{saving?"Saving…":"Save"}</button>
           </div>
-        </FormBox>
+        </EiFormBox>
         {Object.entries(byPeriod(marketData)).map(([period,rows])=>(
           <div key={period} style={{ background:"#070707", border:"1px solid #141414", borderRadius:10, padding:"12px 16px", marginBottom:10 }}>
             <div style={{ fontSize:11, color:"#555", fontFamily:"monospace", fontWeight:700, marginBottom:10 }}>{period}</div>
@@ -2291,17 +2347,17 @@ function EdgeIntelTab() {
 
       {/* ── CAPEX ───────────────────────────────────────────────────────────── */}
       {section==="capex" && <>
-        <FormBox title="💰 Add Capex by Company — quarterly spend">
+        <EiFormBox title="💰 Add Capex by Company — quarterly spend">
           <div className="ei-form-row">
-            <F label="Period (e.g. Q2-2026)" value={capF.period} onChange={v=>setCapF(f=>({...f,period:v}))} placeholder="Q2-2026"/>
-            <F label="Company" value={capF.company} onChange={v=>setCapF(f=>({...f,company:v}))} options={["TSMC","Samsung","SK_Hynix","Micron","Intel","ASML_customer_total"]}/>
-            <F label="Capex $B" value={capF.capex_usd_b} onChange={v=>setCapF(f=>({...f,capex_usd_b:v}))} type="number" placeholder="8.5"/>
-            <F label="YoY Growth %" value={capF.capex_growth_yoy} onChange={v=>setCapF(f=>({...f,capex_growth_yoy:v}))} type="number" placeholder="+35"/>
-            <F label="Primary Use" value={capF.primary_use} onChange={v=>setCapF(f=>({...f,primary_use:v}))} options={["EUV_ramp","DRAM_HBM","Logic_advanced","NAND","Legacy_DUV","Mixed"]}/>
-            <F label="Notes (optional)" value={capF.notes} onChange={v=>setCapF(f=>({...f,notes:v}))} placeholder="optional" full/>
-            <Btn onClick={saveCap}/>
+            <EiField label="Period (e.g. Q2-2026)" value={capF.period} onChange={v=>setCapF(f=>({...f,period:v}))} placeholder="Q2-2026"/>
+            <EiField label="Company" value={capF.company} onChange={v=>setCapF(f=>({...f,company:v}))} options={["TSMC","Samsung","SK_Hynix","Micron","Intel","ASML_customer_total"]}/>
+            <EiField label="Capex $B" value={capF.capex_usd_b} onChange={v=>setCapF(f=>({...f,capex_usd_b:v}))} type="number" placeholder="8.5"/>
+            <EiField label="YoY Growth %" value={capF.capex_growth_yoy} onChange={v=>setCapF(f=>({...f,capex_growth_yoy:v}))} type="number" placeholder="+35"/>
+            <EiField label="Primary Use" value={capF.primary_use} onChange={v=>setCapF(f=>({...f,primary_use:v}))} options={["EUV_ramp","DRAM_HBM","Logic_advanced","NAND","Legacy_DUV","Mixed"]}/>
+            <EiField label="Notes (optional)" value={capF.notes} onChange={v=>setCapF(f=>({...f,notes:v}))} placeholder="optional" full/>
+            <button onClick={saveCap} disabled={saving} className="ei-save-btn" style={{flex:"1 1 100%"}}>{saving?"Saving…":"Save"}</button>
           </div>
-        </FormBox>
+        </EiFormBox>
         {Object.entries(byPeriod(capexData)).map(([period,rows])=>(
           <div key={period} style={{ background:"#070707", border:"1px solid #141414", borderRadius:10, padding:"12px 16px", marginBottom:10 }}>
             <div style={{ fontSize:11, color:"#555", fontFamily:"monospace", fontWeight:700, marginBottom:10 }}>{period}</div>
@@ -2323,25 +2379,25 @@ function EdgeIntelTab() {
 
       {/* ── ASML TOOL PLAN ──────────────────────────────────────────────────── */}
       {section==="tools" && <>
-        <FormBox title="🔧 ASML Tool Shipment Plan — quarterly (DUV / NXE / EXE)">
+        <EiFormBox title="🔧 ASML Tool Shipment Plan — quarterly (DUV / NXE / EXE)">
           <div className="ei-form-row">
-            <F label="Period (e.g. Q2-2026)" value={toolF.period} onChange={v=>setToolF(f=>({...f,period:v}))} placeholder="Q2-2026"/>
-            <F label="Tool Type" value={toolF.tool_type} onChange={v=>setToolF(f=>({...f,tool_type:v}))} options={["DUV","NXE_low_NA","NXE_high_NA","EXE"]}/>
-            <F label="Units Planned" value={toolF.units_plan} onChange={v=>setToolF(f=>({...f,units_plan:v}))} type="number" placeholder="12"/>
-            <F label="ASP €M (auto)" value={toolF.asp_eur_m} onChange={v=>setToolF(f=>({...f,asp_eur_m:v}))} type="number"/>
+            <EiField label="Period (e.g. Q2-2026)" value={toolF.period} onChange={v=>setToolF(f=>({...f,period:v}))} placeholder="Q2-2026"/>
+            <EiField label="Tool Type" value={toolF.tool_type} onChange={v=>setToolF(f=>({...f,tool_type:v}))} options={["DUV","NXE_low_NA","NXE_high_NA","EXE"]}/>
+            <EiField label="Units Planned" value={toolF.units_plan} onChange={v=>setToolF(f=>({...f,units_plan:v}))} type="number" placeholder="12"/>
+            <EiField label="ASP €M (auto)" value={toolF.asp_eur_m} onChange={v=>setToolF(f=>({...f,asp_eur_m:v}))} type="number"/>
             <div className="ei-field">
               <span className="ei-label">Implied Rev</span>
               <div style={{ fontFamily:"monospace", fontSize:16, fontWeight:700, color:"#00e5a0", padding:"10px 12px", background:"#0a0a0a", borderRadius:6, border:"1px solid #1a1a1a" }}>
                 €{((parseFloat(toolF.units_plan)||0)*(parseFloat(toolF.asp_eur_m)||0)).toFixed(0)}M
               </div>
             </div>
-            <F label="Notes (optional)" value={toolF.notes} onChange={v=>setToolF(f=>({...f,notes:v}))} placeholder="optional" full/>
-            <Btn onClick={saveTool}/>
+            <EiField label="Notes (optional)" value={toolF.notes} onChange={v=>setToolF(f=>({...f,notes:v}))} placeholder="optional" full/>
+            <button onClick={saveTool} disabled={saving} className="ei-save-btn" style={{flex:"1 1 100%"}}>{saving?"Saving…":"Save"}</button>
           </div>
           <div style={{ marginTop:10, fontSize:10, color:"#2a2a2a" }}>
             ASP reference: DUV €45M · NXE low-NA €230M · NXE high-NA €380M · EXE €380M — override if your data differs
           </div>
-        </FormBox>
+        </EiFormBox>
         {Object.entries(byPeriod(toolData)).map(([period,rows])=>{
           const total=rows.reduce((s,r)=>s+(r.implied_rev_eur_m||r.units_plan*r.asp_eur_m||0),0);
           return (
@@ -2395,12 +2451,12 @@ function EdgeIntelTab() {
                 <div key={q.period} style={{ background:"#070707", border:"1px solid #1a1a1a", borderRadius:10, padding:"16px", marginBottom:12 }}>
                   <div style={{ fontFamily:"monospace", fontSize:13, color:"#555", fontWeight:700, marginBottom:12 }}>{q.period}</div>
                   <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(170px, 1fr))", gap:10, marginBottom:12 }}>
-                    <Card label="Tool revenue (quarterly)" value={`€${q.total.toFixed(0)}M`} color="#888"/>
-                    <Card label="+ Installed base (~28%)" value={`€${ib.toFixed(0)}M`} color="#555"/>
-                    <Card label="= Quarterly total" value={`€${qRev.toFixed(0)}M`} color="#e0e0e0"/>
-                    <Card label="Annualised" value={`€${(aRev/1000).toFixed(1)}B`} color="#f5c842" sub="×4 quarters"/>
-                    <Card label="Gross profit (53%)" value={`€${(aGP/1000).toFixed(1)}B`} color="#888"/>
-                    <Card label="Implied EPS/yr" value={`€${eps.toFixed(0)}`} color={eps>30?"#00e5a0":"#f5c842"} sub="÷ 405M shares"/>
+                    <EiCard label="Tool revenue (quarterly)" value={`€${q.total.toFixed(0)}M`} color="#888"/>
+                    <EiCard label="+ Installed base (~28%)" value={`€${ib.toFixed(0)}M`} color="#555"/>
+                    <EiCard label="= Quarterly total" value={`€${qRev.toFixed(0)}M`} color="#e0e0e0"/>
+                    <EiCard label="Annualised" value={`€${(aRev/1000).toFixed(1)}B`} color="#f5c842" sub="×4 quarters"/>
+                    <EiCard label="Gross profit (53%)" value={`€${(aGP/1000).toFixed(1)}B`} color="#888"/>
+                    <EiCard label="Implied EPS/yr" value={`€${eps.toFixed(0)}`} color={eps>30?"#00e5a0":"#f5c842"} sub="÷ 405M shares"/>
                   </div>
                   {/* Tool breakdown */}
                   <div style={{ display:"flex", gap:8, flexWrap:"wrap", marginBottom:10 }}>
@@ -2745,7 +2801,7 @@ export default function App() {
           border: none;
           border-bottom: 2px solid transparent;
           color: #3a3a3a;
-          padding: 14px 12px;
+          padding: 15px 13px;
           cursor: pointer;
           display: flex;
           align-items: center;
@@ -2753,10 +2809,14 @@ export default function App() {
           font-size: 13px;
           font-weight: 400;
           white-space: nowrap;
-          transition: all 0.15s;
+          transition: color 0.15s;
           flex-shrink: 0;
+          min-height: 50px;
+          touch-action: manipulation;
+          -webkit-tap-highlight-color: transparent;
         }
         .app-tab-btn.active { border-bottom-color: #00e5a0; color: #e0e0e0; font-weight: 600; }
+        .app-tab-btn:active { color: #aaa; }
         .app-meta { display: flex; align-items: center; gap: 5px; font-size: 10px; color: #1e1e1e; font-family: monospace; flex-shrink: 0; }
         .app-content { padding: 20px 20px; max-width: 1400px; margin: 0 auto; }
 
@@ -2768,42 +2828,54 @@ export default function App() {
 
         /* ── Edge Intel forms ── */
         .ei-form-row { display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-end; }
-        .ei-field { display: flex; flex-direction: column; gap: 5px; flex: 1 1 140px; min-width: 0; }
-        .ei-field.wide { flex: 2 1 220px; }
+        .ei-field { display: flex; flex-direction: column; gap: 6px; flex: 1 1 140px; min-width: 0; }
+        .ei-field.wide { flex: 2 1 200px; }
         .ei-field.full { flex: 1 1 100%; }
         .ei-field input, .ei-field select {
           width: 100%;
-          background: #0d0d0d;
-          border: 1px solid #222;
-          border-radius: 8px;
-          color: #d0d0d0;
-          padding: 11px 12px;
+          background: #111;
+          border: 1px solid #2a2a2a;
+          border-radius: 10px;
+          color: #e0e0e0;
+          padding: 13px 14px;
           font-size: 16px;
           font-family: monospace;
+          line-height: 1.2;
+          min-height: 48px;
           -webkit-appearance: none;
           appearance: none;
+          touch-action: manipulation;
+        }
+        .ei-field input:focus, .ei-field select:focus {
+          border-color: #00e5a055;
+          outline: none;
+          background: #151515;
         }
         .ei-field select {
-          background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%23555'/%3E%3C/svg%3E");
+          background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8'%3E%3Cpath d='M0 0l6 8 6-8z' fill='%23666'/%3E%3C/svg%3E");
           background-repeat: no-repeat;
-          background-position: right 12px center;
-          padding-right: 32px;
+          background-position: right 14px center;
+          padding-right: 36px;
+          cursor: pointer;
         }
-        .ei-label { font-size: 10px; color: #555; text-transform: uppercase; letter-spacing: 0.8px; }
+        .ei-label { font-size: 11px; color: #666; text-transform: uppercase; letter-spacing: 0.8px; font-weight: 600; }
         .ei-save-btn {
           flex: 1 1 100%;
           background: #00e5a0;
           border: none;
-          border-radius: 8px;
+          border-radius: 10px;
           color: #000;
-          padding: 13px 24px;
-          font-size: 15px;
+          padding: 15px 24px;
+          font-size: 16px;
           font-weight: 700;
           cursor: pointer;
-          margin-top: 2px;
-          letter-spacing: 0.3px;
+          margin-top: 4px;
+          min-height: 52px;
+          touch-action: manipulation;
+          -webkit-tap-highlight-color: transparent;
         }
-        .ei-save-btn:active { opacity: 0.85; }
+        .ei-save-btn:active { opacity: 0.8; transform: scale(0.99); }
+        .ei-save-btn:disabled { opacity: 0.5; }
         .ei-nav {
           display: flex;
           gap: 6px;
@@ -2817,16 +2889,20 @@ export default function App() {
         .ei-nav-btn {
           flex-shrink: 0;
           border-radius: 8px;
-          padding: 9px 16px;
+          padding: 10px 16px;
           cursor: pointer;
-          font-size: 12px;
+          font-size: 13px;
           font-weight: 600;
           white-space: nowrap;
-          border: 1px solid #1a1a1a;
-          background: transparent;
+          border: 1px solid #222;
+          background: #0a0a0a;
           color: #555;
+          min-height: 44px;
+          touch-action: manipulation;
+          -webkit-tap-highlight-color: transparent;
         }
-        .ei-nav-btn.active { background: #00e5a011; border-color: #00e5a033; color: #00e5a0; }
+        .ei-nav-btn.active { background: #00e5a011; border-color: #00e5a044; color: #00e5a0; }
+        .ei-nav-btn:active { opacity: 0.7; }
         .ei-formbox {
           background: #070707;
           border-radius: 10px;
