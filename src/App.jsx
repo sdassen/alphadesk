@@ -2357,11 +2357,21 @@ function EdgeIntelTab() {
         </EiFormBox>
         {Object.entries(byPeriod(marketData)).map(([period,rows])=>(
           <div key={period} style={{ background:"#070707", border:"1px solid #141414", borderRadius:10, padding:"12px 16px", marginBottom:10 }}>
-            <div style={{ fontSize:11, color:"#555", fontFamily:"monospace", fontWeight:700, marginBottom:10 }}>{period}</div>
+            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:10 }}>
+              <span style={{ fontSize:11, color:"#555", fontFamily:"monospace", fontWeight:700 }}>{period}</span>
+            </div>
             <div style={{ display:"flex", gap:10, flexWrap:"wrap" }}>
               {rows.map(r=>(
-                <div key={r.id} style={{ background:"#0a0a0a", borderRadius:7, padding:"8px 12px", minWidth:150 }}>
-                  <div style={{ fontSize:9, color:"#333", textTransform:"uppercase", letterSpacing:0.8 }}>{r.segment} · {r.metric.replace(/_/g," ")}</div>
+                <div key={r.id} style={{ background:"#0a0a0a", borderRadius:7, padding:"8px 12px", minWidth:150, position:"relative" }}>
+                  <div style={{ position:"absolute", top:6, right:6, display:"flex", gap:4 }}>
+                    <button onClick={()=>setMktF({ period:r.period, segment:r.segment, metric:r.metric, value:String(r.value), notes:r.notes||"" })}
+                      style={{ background:"transparent", border:"none", color:"#2a2a2a", cursor:"pointer", fontSize:11, lineHeight:1, padding:"2px 4px" }}
+                      onMouseEnter={e=>e.target.style.color="#f5c842"} onMouseLeave={e=>e.target.style.color="#2a2a2a"} title="Edit">✎</button>
+                    <button onClick={async()=>{ await SB.from("edge_intel_market").delete().eq("id",r.id); load(); }}
+                      style={{ background:"transparent", border:"none", color:"#2a2a2a", cursor:"pointer", fontSize:14, lineHeight:1, padding:"2px 4px" }}
+                      onMouseEnter={e=>e.target.style.color="#ff6b6b"} onMouseLeave={e=>e.target.style.color="#2a2a2a"} title="Delete">×</button>
+                  </div>
+                  <div style={{ fontSize:9, color:"#333", textTransform:"uppercase", letterSpacing:0.8, paddingRight:16 }}>{r.segment} · {r.metric.replace(/_/g," ")}</div>
                   <div style={{ fontFamily:"monospace", fontSize:17, fontWeight:700, color:r.value>0?"#00e5a0":"#ff6b6b", marginTop:4 }}>
                     {r.value>0?"+":""}{r.value}%
                   </div>
@@ -2389,11 +2399,21 @@ function EdgeIntelTab() {
         </EiFormBox>
         {Object.entries(byPeriod(capexData)).map(([period,rows])=>(
           <div key={period} style={{ background:"#070707", border:"1px solid #141414", borderRadius:10, padding:"12px 16px", marginBottom:10 }}>
-            <div style={{ fontSize:11, color:"#555", fontFamily:"monospace", fontWeight:700, marginBottom:10 }}>{period}</div>
+            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:10 }}>
+              <span style={{ fontSize:11, color:"#555", fontFamily:"monospace", fontWeight:700 }}>{period}</span>
+            </div>
             <div style={{ display:"flex", gap:10, flexWrap:"wrap" }}>
               {rows.map(r=>(
-                <div key={r.id} style={{ background:"#0a0a0a", borderRadius:7, padding:"8px 12px", minWidth:170 }}>
-                  <div style={{ fontSize:12, fontFamily:"monospace", fontWeight:700, color:"#e0e0e0" }}>{r.company.replace(/_/g," ")}</div>
+                <div key={r.id} style={{ background:"#0a0a0a", borderRadius:7, padding:"8px 12px", minWidth:170, position:"relative" }}>
+                  <div style={{ position:"absolute", top:6, right:6, display:"flex", gap:4 }}>
+                    <button onClick={()=>setCapF({ period:r.period, company:r.company, capex_usd_b:r.capex_usd_b!=null?String(r.capex_usd_b):"", capex_growth_yoy:r.capex_growth_yoy!=null?String(r.capex_growth_yoy):"", primary_use:r.primary_use||"EUV_ramp", notes:r.notes||"" })}
+                      style={{ background:"transparent", border:"none", color:"#2a2a2a", cursor:"pointer", fontSize:11, lineHeight:1, padding:"2px 4px" }}
+                      onMouseEnter={e=>e.target.style.color="#f5c842"} onMouseLeave={e=>e.target.style.color="#2a2a2a"} title="Edit">✎</button>
+                    <button onClick={async()=>{ await SB.from("edge_intel_capex").delete().eq("id",r.id); load(); }}
+                      style={{ background:"transparent", border:"none", color:"#2a2a2a", cursor:"pointer", fontSize:14, lineHeight:1, padding:"2px 4px" }}
+                      onMouseEnter={e=>e.target.style.color="#ff6b6b"} onMouseLeave={e=>e.target.style.color="#2a2a2a"} title="Delete">×</button>
+                  </div>
+                  <div style={{ fontSize:12, fontFamily:"monospace", fontWeight:700, color:"#e0e0e0", paddingRight:16 }}>{r.company.replace(/_/g," ")}</div>
                   <div style={{ fontSize:9, color:"#333", marginTop:2 }}>{r.primary_use?.replace(/_/g," ")}</div>
                   {r.capex_usd_b && <div style={{ fontFamily:"monospace", fontSize:15, fontWeight:700, color:"#888", marginTop:4 }}>${r.capex_usd_b}B</div>}
                   {r.capex_growth_yoy!=null && <div style={{ fontFamily:"monospace", fontSize:12, color:r.capex_growth_yoy>0?"#00e5a0":"#ff6b6b" }}>{r.capex_growth_yoy>0?"+":""}{r.capex_growth_yoy}% YoY</div>}
@@ -2440,8 +2460,16 @@ function EdgeIntelTab() {
                   const rev=r.implied_rev_eur_m||(r.units_plan*r.asp_eur_m)||0;
                   const isHigh=r.tool_type==="EXE"||r.tool_type==="NXE_high_NA";
                   return (
-                    <div key={r.id} style={{ background:"#0a0a0a", borderRadius:7, padding:"10px 14px", minWidth:160, border:`1px solid ${isHigh?"#f5c84222":"#141414"}` }}>
-                      <div style={{ fontSize:12, fontFamily:"monospace", fontWeight:700, color:isHigh?"#f5c842":"#888" }}>{r.tool_type.replace(/_/g," ")}</div>
+                    <div key={r.id} style={{ background:"#0a0a0a", borderRadius:7, padding:"10px 14px", minWidth:160, border:`1px solid ${isHigh?"#f5c84222":"#141414"}`, position:"relative" }}>
+                      <div style={{ position:"absolute", top:6, right:6, display:"flex", gap:4 }}>
+                        <button onClick={()=>setToolF({ period:r.period, tool_type:r.tool_type, units_plan:String(r.units_plan), asp_eur_m:String(r.asp_eur_m), notes:r.notes||"" })}
+                          style={{ background:"transparent", border:"none", color:"#2a2a2a", cursor:"pointer", fontSize:11, lineHeight:1, padding:"2px 4px" }}
+                          onMouseEnter={e=>e.target.style.color="#f5c842"} onMouseLeave={e=>e.target.style.color="#2a2a2a"} title="Edit">✎</button>
+                        <button onClick={async()=>{ await SB.from("edge_intel_asml_tools").delete().eq("id",r.id); load(); }}
+                          style={{ background:"transparent", border:"none", color:"#2a2a2a", cursor:"pointer", fontSize:14, lineHeight:1, padding:"2px 4px" }}
+                          onMouseEnter={e=>e.target.style.color="#ff6b6b"} onMouseLeave={e=>e.target.style.color="#2a2a2a"} title="Delete">×</button>
+                      </div>
+                      <div style={{ fontSize:12, fontFamily:"monospace", fontWeight:700, color:isHigh?"#f5c842":"#888", paddingRight:16 }}>{r.tool_type.replace(/_/g," ")}</div>
                       <div style={{ fontFamily:"monospace", fontSize:18, fontWeight:700, color:"#e0e0e0", marginTop:4 }}>{r.units_plan} units</div>
                       <div style={{ fontFamily:"monospace", fontSize:13, color:"#00e5a0" }}>€{rev.toFixed(0)}M</div>
                       <div style={{ fontSize:9, color:"#2a2a2a", marginTop:2 }}>@ €{r.asp_eur_m}M/unit</div>
