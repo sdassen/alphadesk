@@ -3017,48 +3017,66 @@ function MarktTab() {
                 </div>
               </div>
 
-              {/* Zone bands + bars chart */}
-              <div style={{ position: "relative", height: 120 }}>
-                {/* Zone background bands */}
-                <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column" }}>
-                  <div style={{ flex: "0 0 25%", background: "#ff6b6b06" }}/> {/* 75-100 greed */}
-                  <div style={{ flex: "0 0 30%", background: "#f5c84206" }}/> {/* 45-75 neutral/greed */}
-                  <div style={{ flex: "0 0 45%", background: "#00e5a006" }}/> {/* 0-45 fear */}
-                </div>
+              {/* SVG line chart */}
+              {(() => {
+                const W = 600, H = 110, PAD = { t: 16, r: 32, b: 8, l: 28 };
+                const iW = W - PAD.l - PAD.r;
+                const iH = H - PAD.t - PAD.b;
+                const n = fgHistory.length;
+                const xOf = i => PAD.l + (i / (n - 1)) * iW;
+                const yOf = v => PAD.t + iH - ((v / 100) * iH);
+                const pts = fgHistory.map((d, i) => `${xOf(i).toFixed(1)},${yOf(d.fg).toFixed(1)}`).join(" ");
+                const fillPts = `${xOf(0).toFixed(1)},${(PAD.t+iH).toFixed(1)} ${pts} ${xOf(n-1).toFixed(1)},${(PAD.t+iH).toFixed(1)}`;
+                const dotColor = d => d.fg <= 25 ? "#00e5a0" : d.fg <= 45 ? "#7be0c0" : d.fg <= 55 ? "#f5c842" : d.fg <= 75 ? "#ff9966" : "#ff6b6b";
+                const y75 = yOf(75), y55 = yOf(55), y25 = yOf(25);
+                const last = fgHistory[n-1];
+                const lx = xOf(n-1), ly = yOf(last.fg);
+                const lc = dotColor(last);
+                return (
+                  <svg viewBox={`0 0 ${W} ${H}`} style={{ width:"100%", height: 130, overflow:"visible" }}>
+                    <defs>
+                      <linearGradient id="fgFill" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0%" stopColor={lc} stopOpacity="0.3"/>
+                        <stop offset="100%" stopColor={lc} stopOpacity="0.02"/>
+                      </linearGradient>
+                    </defs>
 
-                {/* Reference lines */}
-                <div style={{ position: "absolute", left: 0, right: 0, top: "25%", borderTop: "1px dashed #ff6b6b18" }}/>
-                <div style={{ position: "absolute", left: 0, right: 0, top: "45%", borderTop: "1px dashed #f5c84222" }}/>
-                <div style={{ position: "absolute", right: 4, top: "23%", fontSize: 8, color: "#ff6b6b44", fontFamily: "monospace" }}>75</div>
-                <div style={{ position: "absolute", right: 4, top: "43%", fontSize: 8, color: "#f5c84244", fontFamily: "monospace" }}>55</div>
+                    {/* Zone reference lines */}
+                    <line x1={PAD.l} y1={y75} x2={W-PAD.r} y2={y75} stroke="#ff6b6b" strokeWidth="0.5" strokeDasharray="4,4" strokeOpacity="0.3"/>
+                    <line x1={PAD.l} y1={y55} x2={W-PAD.r} y2={y55} stroke="#f5c842" strokeWidth="0.5" strokeDasharray="4,4" strokeOpacity="0.3"/>
+                    <line x1={PAD.l} y1={y25} x2={W-PAD.r} y2={y25} stroke="#00e5a0" strokeWidth="0.5" strokeDasharray="4,4" strokeOpacity="0.3"/>
 
-                {/* Bars */}
-                <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "flex-end", gap: 2, paddingRight: 16 }}>
-                  {fgHistory.map((d, i) => {
-                    const h = Math.max(4, (d.fg / 100) * 100);
-                    const color = d.fg <= 25 ? "#00e5a0" : d.fg <= 45 ? "#7be0c0" : d.fg <= 55 ? "#f5c842" : d.fg <= 75 ? "#ff9966" : "#ff6b6b";
-                    const isLast = i === fgHistory.length - 1;
-                    return (
-                      <div key={d.date} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 2 }}>
-                        <div style={{
-                          width: "100%", height: `${h}%`,
-                          background: isLast ? color : color + "99",
-                          borderRadius: "3px 3px 0 0",
-                          position: "relative",
-                          minWidth: 4,
-                        }}>
-                          {isLast && (
-                            <div style={{ position: "absolute", top: -16, left: "50%", transform: "translateX(-50%)",
-                              fontSize: 9, fontFamily: "monospace", fontWeight: 700, color, whiteSpace: "nowrap" }}>
+                    {/* Zone labels */}
+                    <text x={PAD.l-4} y={y75+3} fontSize="7" fill="#ff6b6b" opacity="0.5" textAnchor="end">75</text>
+                    <text x={PAD.l-4} y={y55+3} fontSize="7" fill="#f5c842" opacity="0.5" textAnchor="end">55</text>
+                    <text x={PAD.l-4} y={y25+3} fontSize="7" fill="#00e5a0" opacity="0.5" textAnchor="end">25</text>
+
+                    {/* Fill under line */}
+                    <polygon points={fillPts} fill="url(#fgFill)"/>
+
+                    {/* Line */}
+                    <polyline points={pts} fill="none" stroke={lc} strokeWidth="1.5" strokeOpacity="0.8" strokeLinejoin="round" strokeLinecap="round"/>
+
+                    {/* Dots */}
+                    {fgHistory.map((d, i) => {
+                      const x = xOf(i), y = yOf(d.fg), c = dotColor(d);
+                      const isLast = i === n - 1;
+                      return (
+                        <g key={i}>
+                          <circle cx={x} cy={y} r={isLast ? 4.5 : 2.5} fill={c} opacity={isLast ? 1 : 0.7}/>
+                          {isLast && <circle cx={x} cy={y} r={8} fill={c} opacity="0.15"/>}
+                          {/* Show value for last and first */}
+                          {(isLast || i === 0 || i === Math.floor(n/2)) && (
+                            <text x={x} y={y - 8} fontSize="9" fill={c} textAnchor="middle" fontFamily="monospace" fontWeight={isLast ? "bold" : "normal"}>
                               {d.fg}
-                            </div>
+                            </text>
                           )}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
+                        </g>
+                      );
+                    })}
+                  </svg>
+                );
+              })()}
 
               {/* X-axis dates — only show a few */}
               <div style={{ display: "flex", justifyContent: "space-between", marginTop: 6, paddingRight: 16 }}>
