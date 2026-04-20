@@ -928,7 +928,7 @@ const DEFAULT_POSITIONS = [
   { symbol: "POWL", shares: 6,   avgCost: 175.562, thesis: "Powell Industries — data center power" },
 ];
 
-function PortfolioTab({ positions, setPositions }) {
+function PortfolioTab({ positions, setPositions, fearGreed }) {
   const [quotes, setQuotes] = useState({});
   const [fundamentals, setFundamentals] = useState({});
   const [finnhubData, setFinnhubData] = useState({});
@@ -1127,6 +1127,14 @@ Return ONLY valid JSON:
   const pnl = totalValue - totalCost;
   const ret = totalCost ? (pnl / totalCost) * 100 : 0;
 
+  // Semicon exposure — for Fear & Greed context
+  const SEMICON_SYMS = new Set(["MU","TSM","MRVL","CLS","LRCX","KLAC","ASML","AVGO","NVDA","AMD","AMAT"]);
+  const semiValue = positions.reduce((s, p) => {
+    if (!SEMICON_SYMS.has(p.symbol)) return s;
+    return s + p.shares * (quotes[p.symbol]?.price || p.avgCost);
+  }, 0);
+  const semiPct = totalValue > 0 ? (semiValue / totalValue) * 100 : 0;
+
   // ── Cooldown logic ───────────────────────────────────────────────────────────
   const cooldownStatus = (() => {
     if (!lastRebalance) return { blocked: false, daysLeft: 0, daysAgo: null };
@@ -1210,6 +1218,64 @@ Return ONLY valid JSON:
 
   return (
     <div>
+      {/* ── Fear & Greed × Semicon Banner ── */}
+      {fearGreed != null && (() => {
+        const fg = fearGreed;
+        const isExtremeFear  = fg <= 25;
+        const isFear         = fg <= 45;
+        const isExtremeGreed = fg >= 75;
+        const isGreed        = fg >= 55;
+        const semiPctRound   = Math.round(semiPct);
+
+        if (isExtremeFear) return (
+          <div style={{ background:"#00e5a008", border:"1.5px solid #00e5a033", borderRadius:12, padding:"14px 16px", marginBottom:14 }}>
+            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start" }}>
+              <div>
+                <div style={{ fontSize:12, fontWeight:700, color:"#00e5a0", marginBottom:4 }}>
+                  ⚡ EXTREME FEAR — Historisch koopmoment voor jouw semicons
+                </div>
+                <div style={{ fontSize:11, color:"#444", lineHeight:1.7 }}>
+                  Fear & Greed staat op <span style={{ color:"#00e5a0", fontFamily:"monospace", fontWeight:700 }}>{fg}</span>. 
+                  Jouw semicon exposure is <span style={{ fontFamily:"monospace", fontWeight:700, color:"#e0e0e0" }}>{semiPctRound}%</span> van de portfolio.
+                  Bij extreme fear worden semicons disproportioneel hard afgestraft — fundamentals veranderen niet.
+                  Als jouw Edge Intel data nog bullish is, dan is dit het toevoegingsmoment.
+                </div>
+              </div>
+              <div style={{ fontFamily:"monospace", fontSize:28, fontWeight:700, color:"#00e5a0", flexShrink:0, marginLeft:16 }}>{fg}</div>
+            </div>
+          </div>
+        );
+        if (isFear) return (
+          <div style={{ background:"#7be0c008", border:"1px solid #7be0c022", borderRadius:12, padding:"12px 16px", marginBottom:14 }}>
+            <div style={{ fontSize:11, fontWeight:700, color:"#7be0c0", marginBottom:3 }}>📉 FEAR — Markt is nerveus, semicons onder druk</div>
+            <div style={{ fontSize:11, color:"#444", lineHeight:1.6 }}>
+              Fear & Greed <span style={{ fontFamily:"monospace", fontWeight:700, color:"#7be0c0" }}>{fg}</span> · {semiPctRound}% semicon exposure. 
+              Kijk naar je Edge Intel signals — als fundamentals intact zijn, is dit accumulation territory.
+            </div>
+          </div>
+        );
+        if (isExtremeGreed) return (
+          <div style={{ background:"#ff6b6b08", border:"1px solid #ff6b6b22", borderRadius:12, padding:"12px 16px", marginBottom:14 }}>
+            <div style={{ fontSize:11, fontWeight:700, color:"#ff6b6b", marginBottom:3 }}>⚠️ EXTREME GREED — Overweeg risico te verminderen</div>
+            <div style={{ fontSize:11, color:"#444", lineHeight:1.6 }}>
+              Fear & Greed <span style={{ fontFamily:"monospace", fontWeight:700, color:"#ff6b6b" }}>{fg}</span> · {semiPctRound}% semicon exposure. 
+              Momentum kan nog doorzetten maar bij extreme greed zijn semicons historisch overpriced. 
+              Zeker met {semiPctRound}% concentratie: trim posities die EXPENSIVE tonen in Valuation tab.
+            </div>
+          </div>
+        );
+        if (isGreed) return (
+          <div style={{ background:"#f5c84208", border:"1px solid #f5c84222", borderRadius:12, padding:"12px 16px", marginBottom:14 }}>
+            <div style={{ fontSize:11, fontWeight:700, color:"#f5c842", marginBottom:3 }}>📈 GREED — Markt is optimistisch</div>
+            <div style={{ fontSize:11, color:"#444", lineHeight:1.6 }}>
+              Fear & Greed <span style={{ fontFamily:"monospace", fontWeight:700, color:"#f5c842" }}>{fg}</span> · {semiPctRound}% semicon. 
+              Momentum traders actief — check Valuation tab voor posities die richting EXPENSIVE gaan.
+            </div>
+          </div>
+        );
+        return null; // Neutral — geen banner
+      })()}
+
       {/* Summary cards */}
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 14 }}>
         {[["Value", `$${totalValue.toFixed(0)}`, totalValue >= totalCost ? "#00e5a0" : "#ff6b6b"],
@@ -1677,6 +1743,13 @@ function ValuationTab({ positions, shortlist }) {
         anchorPE = trailingPE || forwardPE || 20;
       }
 
+      // Custom base EPS override — used for cyclicals like MU where trailing
+      // EPS is stale (FY2025 $21 while running at $76+/yr in FY2026)
+      // Set custom_base_eps in valuation_config to use through-cycle normalized EPS
+      if (cfg.custom_base_eps && cfg.custom_base_eps > 0) {
+        baseEps = cfg.custom_base_eps;
+      }
+
       // PE bands from config — absolute values, not multipliers of current PE
       // This is the key: pe_base_abs encodes what "fair" historically means for this stock
       const peBear = cfg.pe_bear_abs || anchorPE * 0.65;
@@ -1712,15 +1785,21 @@ function ValuationTab({ positions, shortlist }) {
       const histMap = {};
       for (const p of priceHistory) histMap[p.date] = p.close;
 
+      // Apply custom_base_eps override before storing
+      const effectiveBaseEps = (cfg.custom_base_eps && cfg.custom_base_eps > 0)
+        ? cfg.custom_base_eps : baseEps;
+
       setData({
         symbol, currentPrice,
-        trailingEps, forwardEps, baseEps,
+        trailingEps, forwardEps, baseEps: effectiveBaseEps,
         stockType: cfg.stock_type || "generic",
         cfgNote: cfg.note || null,
+        cfgBaseEps: cfg.custom_base_eps || null,
         epsBasis: epsBasis,
         anchorPE: anchorPE,
-        baseEpsSource: epsBasis === 'trailing' ? "trailing EPS"
-          : (forwardEps ? "forward EPS" : "derived"),
+        baseEpsSource: (cfg.custom_base_eps && cfg.custom_base_eps > 0)
+          ? `custom $${cfg.custom_base_eps}/yr (through-cycle)`
+          : (epsBasis === 'trailing' ? "trailing EPS" : (forwardEps ? "forward EPS" : "derived")),
         g1Auto, g2Auto, g1Source, g2Source, g1Capped, rawG1,
         peBear, peBase, peBull,
         anchorPE,
@@ -2122,7 +2201,7 @@ function ValuationTab({ positions, shortlist }) {
                 {[
                   ["Phase 1", `${(effectiveG1*100).toFixed(1)}%/yr`, data.g1Source, customG1 ? "#f5c842" : "#888"],
                   ["Phase 2", `${(effectiveG2*100).toFixed(1)}%/yr`, data.g2Source, customG2 ? "#f5c842" : "#555"],
-                  ["Base EPS", data.baseEps ? `$${data.baseEps.toFixed(2)}` : "—", data.baseEpsSource || "trailing", "#888"],
+                  ["Base EPS", data.baseEps ? `$${data.baseEps.toFixed(2)}` : "—", data.cfgBaseEps ? "custom override" : (data.baseEpsSource || "trailing"), data.cfgBaseEps ? "#f5c842" : "#888"],
                   ["PE basis", `${data.peBear.toFixed(0)}–${data.peBase.toFixed(0)}–${data.peBull.toFixed(0)}×`, data.useForwardPEBasis ? "fwd PE" : `${data.histPEsCount} pts`, "#555"],
                 ].map(([label, val, source, color]) => (
                   <div key={label} style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
@@ -2753,6 +2832,7 @@ function MarktTab() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [lastUpdated, setLastUpdated] = useState(null);
+  const [fgHistory, setFgHistory] = useState([]);
 
   const load = async () => {
     setLoading(true);
@@ -2774,6 +2854,20 @@ function MarktTab() {
         }, { onConflict: "date" });
       }
     } catch (e) { console.error(e); }
+    // Load Fear & Greed history from market_snapshots
+    try {
+      const { data: snap } = await SB.from("market_snapshots")
+        .select("date, fear_greed, vix, sp500_price")
+        .not("fear_greed", "is", null)
+        .order("date", { ascending: true })
+        .limit(60);
+      if (snap?.length) setFgHistory(snap.map(r => ({
+        date: r.date.slice(5), // "MM-DD"
+        fg: r.fear_greed,
+        vix: parseFloat(r.vix),
+        sp500: parseFloat(r.sp500_price),
+      })));
+    } catch(e) { /* silent */ }
     setLoading(false);
   };
 
@@ -2906,7 +3000,100 @@ function MarktTab() {
                 <div style={{ color: "#333", fontSize: 12 }}>Fear & Greed niet beschikbaar</div>
               )}
             </div>
-          </div>
+
+          </div>{/* end rij 1 */}
+
+          {/* ── Fear & Greed History Chart ── */}
+          {fgHistory.length > 1 && (
+            <div style={{ background: "#070707", border: "1px solid #141414", borderRadius: 12, padding: "16px", marginTop: 10 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+                <div style={{ fontSize: 10, color: "#444", textTransform: "uppercase", letterSpacing: 1.2 }}>
+                  Fear & Greed — {fgHistory.length} dag trend
+                </div>
+                <div style={{ display: "flex", gap: 12, fontSize: 9, color: "#333", fontFamily: "monospace" }}>
+                  <span style={{ color: "#00e5a0" }}>● Fear (&lt;45)</span>
+                  <span style={{ color: "#f5c842" }}>● Neutral (45-55)</span>
+                  <span style={{ color: "#ff6b6b" }}>● Greed (&gt;55)</span>
+                </div>
+              </div>
+
+              {/* Zone bands + bars chart */}
+              <div style={{ position: "relative", height: 120 }}>
+                {/* Zone background bands */}
+                <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column" }}>
+                  <div style={{ flex: "0 0 25%", background: "#ff6b6b06" }}/> {/* 75-100 greed */}
+                  <div style={{ flex: "0 0 30%", background: "#f5c84206" }}/> {/* 45-75 neutral/greed */}
+                  <div style={{ flex: "0 0 45%", background: "#00e5a006" }}/> {/* 0-45 fear */}
+                </div>
+
+                {/* Reference lines */}
+                <div style={{ position: "absolute", left: 0, right: 0, top: "25%", borderTop: "1px dashed #ff6b6b18" }}/>
+                <div style={{ position: "absolute", left: 0, right: 0, top: "45%", borderTop: "1px dashed #f5c84222" }}/>
+                <div style={{ position: "absolute", right: 4, top: "23%", fontSize: 8, color: "#ff6b6b44", fontFamily: "monospace" }}>75</div>
+                <div style={{ position: "absolute", right: 4, top: "43%", fontSize: 8, color: "#f5c84244", fontFamily: "monospace" }}>55</div>
+
+                {/* Bars */}
+                <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "flex-end", gap: 2, paddingRight: 16 }}>
+                  {fgHistory.map((d, i) => {
+                    const h = Math.max(4, (d.fg / 100) * 100);
+                    const color = d.fg <= 25 ? "#00e5a0" : d.fg <= 45 ? "#7be0c0" : d.fg <= 55 ? "#f5c842" : d.fg <= 75 ? "#ff9966" : "#ff6b6b";
+                    const isLast = i === fgHistory.length - 1;
+                    return (
+                      <div key={d.date} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 2 }}>
+                        <div style={{
+                          width: "100%", height: `${h}%`,
+                          background: isLast ? color : color + "99",
+                          borderRadius: "3px 3px 0 0",
+                          position: "relative",
+                          minWidth: 4,
+                        }}>
+                          {isLast && (
+                            <div style={{ position: "absolute", top: -16, left: "50%", transform: "translateX(-50%)",
+                              fontSize: 9, fontFamily: "monospace", fontWeight: 700, color, whiteSpace: "nowrap" }}>
+                              {d.fg}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* X-axis dates — only show a few */}
+              <div style={{ display: "flex", justifyContent: "space-between", marginTop: 6, paddingRight: 16 }}>
+                <span style={{ fontSize: 9, color: "#2a2a2a", fontFamily: "monospace" }}>{fgHistory[0]?.date}</span>
+                {fgHistory.length > 4 && (
+                  <span style={{ fontSize: 9, color: "#2a2a2a", fontFamily: "monospace" }}>{fgHistory[Math.floor(fgHistory.length/2)]?.date}</span>
+                )}
+                <span style={{ fontSize: 9, color: "#555", fontFamily: "monospace", fontWeight: 700 }}>{fgHistory[fgHistory.length-1]?.date} ← vandaag</span>
+              </div>
+
+              {/* Summary stats */}
+              {fgHistory.length >= 3 && (() => {
+                const recent5 = fgHistory.slice(-5);
+                const avg5 = recent5.reduce((s,d) => s+d.fg, 0) / recent5.length;
+                const min = Math.min(...fgHistory.map(d=>d.fg));
+                const max = Math.max(...fgHistory.map(d=>d.fg));
+                const trend = fgHistory[fgHistory.length-1].fg - fgHistory[fgHistory.length-3].fg;
+                return (
+                  <div style={{ display: "flex", gap: 16, marginTop: 10, flexWrap: "wrap" }}>
+                    {[
+                      ["5D gemiddelde", avg5.toFixed(0), avg5 < 45 ? "#7be0c0" : avg5 < 55 ? "#f5c842" : "#ff9966"],
+                      ["Periode min", min, "#00e5a0"],
+                      ["Periode max", max, "#ff6b6b"],
+                      ["2D trend", `${trend > 0 ? "+" : ""}${trend}`, trend > 5 ? "#ff9966" : trend < -5 ? "#00e5a0" : "#555"],
+                    ].map(([label, val, color]) => (
+                      <div key={label}>
+                        <div style={{ fontSize: 9, color: "#333", textTransform: "uppercase", letterSpacing: 0.7, marginBottom: 2 }}>{label}</div>
+                        <div style={{ fontFamily: "monospace", fontSize: 14, fontWeight: 700, color }}>{val}</div>
+                      </div>
+                    ))}
+                  </div>
+                );
+              })()}
+            </div>
+          )}
 
           {/* Rij 2: S&P500, Treasury, DXY */}
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(140px, 1fr))", gap: 10 }}>
@@ -2994,6 +3181,7 @@ export default function App() {
   const [shortlist, setShortlist] = useState([]);
   const [positions, setPositions] = useState([]);
   const [booting, setBooting] = useState(true);
+  const [marketFearGreed, setMarketFearGreed] = useState(null);
 
   useEffect(() => {
     const init = async () => {
@@ -3006,6 +3194,12 @@ export default function App() {
         setPositions(pf);
       }
       setBooting(false);
+      // Fetch Fear & Greed for portfolio context
+      try {
+        const r = await fetch("/api/market");
+        const d = await r.json();
+        if (d.fearGreed?.score != null) setMarketFearGreed(d.fearGreed.score);
+      } catch(e) { /* silent */ }
     };
     init();
   }, []);
@@ -3234,7 +3428,7 @@ export default function App() {
               <ShortlistTab shortlist={shortlist} setShortlist={setShortlist}/>
             </div>
             <div style={{ display: tab === "portfolio" ? "block" : "none" }}>
-              <PortfolioTab positions={positions} setPositions={setPositions}/>
+              <PortfolioTab positions={positions} setPositions={setPositions} fearGreed={marketFearGreed}/>
             </div>
             <div style={{ display: tab === "valuation" ? "block" : "none" }}>
               <ValuationTab positions={positions} shortlist={shortlist}/>
