@@ -2837,8 +2837,26 @@ function MarktTab() {
   const load = async () => {
     setLoading(true);
     try {
-      const r = await fetch("/api/market");
+      // Fetch main market data + SOX in parallel
+      const [r, soxR] = await Promise.all([
+        fetch("/api/market"),
+        fetch("/api/yahoo?symbol=%5ESOX&endpoint=quoteSummary&modules=summaryDetail,defaultKeyStatistics"),
+      ]);
       const d = await r.json();
+      // Enrich with SOX data
+      try {
+        const soxJson = await soxR.json();
+        const sd = soxJson?.quoteSummary?.result?.[0]?.summaryDetail;
+        if (sd) {
+          d.sox = sd.regularMarketPrice?.raw ?? sd.previousClose?.raw;
+          d.soxChange = sd.regularMarketChangePercent?.raw != null
+            ? sd.regularMarketChangePercent.raw * 100
+            : null;
+          d.sox52wHigh = sd.fiftyTwoWeekHigh?.raw;
+          d.sox52wLow = sd.fiftyTwoWeekLow?.raw;
+          d.sox200dma = sd.twoHundredDayAverage?.raw;
+        }
+      } catch(e2) { /* SOX optional */ }
       setData(d);
       setLastUpdated(new Date());
       // Save snapshot to DB
@@ -2873,6 +2891,16 @@ function MarktTab() {
 
   useEffect(() => { load(); }, []);
 
+  const soxSignal = (sox, sox200dma) => {
+    if (!sox || !sox200dma) return ["—", "#444", "No data"];
+    const pct = ((sox - sox200dma) / sox200dma) * 100;
+    if (pct > 20) return ["EXTENDED", "#ff6b6b", `+${pct.toFixed(1)}% above 200DMA — semicons overbought`];
+    if (pct > 5)  return ["ABOVE 200D", "#f5c842", `+${pct.toFixed(1)}% above 200DMA — healthy uptrend`];
+    if (pct > -5) return ["AT 200D", "#00e5a0", `${pct.toFixed(1)}% vs 200DMA — near fair value`];
+    if (pct > -15) return ["BELOW 200D", "#7be0c0", `${pct.toFixed(1)}% below 200DMA — potential value zone`];
+    return ["OVERSOLD", "#00e5a0", `${pct.toFixed(1)}% below 200DMA — historically strong buy signal for semicons`];
+  };
+
   const vixSignal = (vix) => {
     if (!vix) return ["—", "#444", "no data"];
     if (vix < 15) return ["COMPLACENT", "#f5c842", "Market is complacent — valuations often elevated"];
@@ -2905,6 +2933,11 @@ function MarktTab() {
     if (data.vix) { score += data.vix > 30 ? 2 : data.vix > 20 ? 1 : 0; factors++; }
     if (data.fearGreed?.score != null) { score += data.fearGreed.score < 30 ? 2 : data.fearGreed.score < 45 ? 1 : 0; factors++; }
     if (data.treasury10y) { score += data.treasury10y < 3.5 ? 1 : data.treasury10y > 4.5 ? -1 : 0; factors++; }
+    if (data.sox && data.sox200dma) {
+      const soxVs200 = (data.sox - data.sox200dma) / data.sox200dma;
+      score += soxVs200 < -0.10 ? 2 : soxVs200 < -0.05 ? 1 : soxVs200 > 0.20 ? -1 : 0;
+      factors++;
+    }
     const avg = factors ? score / factors : 0;
     if (avg >= 1.5) return ["STRONG BUY ZONE", "#00e5a0", "Multiple indicators point to attractive entry timing"];
     if (avg >= 0.8) return ["MODERATE BUY ZONE", "#7be0c0", "Conditions favorable but not extreme"];
@@ -2916,6 +2949,7 @@ function MarktTab() {
   const [vLabel, vColor, vDesc] = vixSignal(data?.vix);
   const [fgLabel, fgColor] = fgSignal(data?.fearGreed?.score);
   const [yLabel, yColor] = yieldSignal(data?.treasury10y);
+  const [soxLabel, soxColor, soxDesc] = soxSignal(data?.sox, data?.sox200dma);
 
   return (
     <div>
@@ -3002,6 +3036,147 @@ function MarktTab() {
             </div>
 
           </div>{/* end rij 1 */}
+
+          {/* ── SOX + AAII row ── */}
+          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 }}>
+
+            {/* SOX — Philadelphia Semiconductor Index */}
+            <div style={{ background:"#070707", border:"1px solid #141414", borderRadius:12, padding:"14px 16px" }}>
+              <div style={{ fontSize:10, color:"#444", textTransform:"uppercase", letterSpacing:1.2, marginBottom:12 }}>
+                SOX — Semicon Index
+              </div>
+              {data?.sox ? (
+                <>
+                  <div style={{ display:"flex", alignItems:"baseline", gap:10, marginBottom:8 }}>
+                    <span style={{ fontFamily:"monospace", fontSize:26, fontWeight:700, color:soxColor }}>
+                      {data.sox.toFixed(0)}
+                    </span>
+                    {data.soxChange != null && (
+                      <span style={{ fontFamily:"monospace", fontSize:13, color:data.soxChange>=0?"#00e5a0":"#ff6b6b" }}>
+                        {data.soxChange>=0?"+":""}{data.soxChange.toFixed(1)}%
+                      </span>
+                    )}
+                  </div>
+                  <div style={{ display:"inline-block", background:soxColor+"22", border:`1px solid ${soxColor}44`,
+                    borderRadius:5, padding:"3px 10px", fontSize:11, fontWeight:700, color:soxColor,
+                    fontFamily:"monospace", marginBottom:10 }}>{soxLabel}</div>
+
+                  {/* 52W range bar */}
+                  {data.sox52wLow && data.sox52wHigh && (() => {
+                    const pct = Math.min(98, Math.max(2,
+                      ((data.sox - data.sox52wLow) / (data.sox52wHigh - data.sox52wLow)) * 100));
+                    return (
+                      <div style={{ marginBottom:10 }}>
+                        <div style={{ display:"flex", justifyContent:"space-between", marginBottom:4 }}>
+                          <span style={{ fontSize:9, color:"#2a2a2a", fontFamily:"monospace" }}>52W L: {data.sox52wLow?.toFixed(0)}</span>
+                          <span style={{ fontSize:9, color:"#555", fontFamily:"monospace" }}>52W H: {data.sox52wHigh?.toFixed(0)}</span>
+                        </div>
+                        <div style={{ height:5, borderRadius:3, background:"#1a1a1a", position:"relative" }}>
+                          <div style={{ position:"absolute", left:0, top:0, height:"100%", width:`${pct}%`,
+                            background:`linear-gradient(to right, #00e5a0, ${soxColor})`, borderRadius:3 }}/>
+                          <div style={{ position:"absolute", left:`${pct}%`, top:-3, width:3, height:11,
+                            background:"#fff", borderRadius:2, transform:"translateX(-50%)" }}/>
+                        </div>
+                      </div>
+                    );
+                  })()}
+
+                  <div style={{ fontSize:11, color:"#444", lineHeight:1.6 }}>{soxDesc}</div>
+
+                  {/* 200DMA reference */}
+                  {data.sox200dma && (
+                    <div style={{ marginTop:8, fontSize:10, color:"#2a2a2a" }}>
+                      200DMA: <span style={{ fontFamily:"monospace", color:"#555" }}>{data.sox200dma.toFixed(0)}</span>
+                    </div>
+                  )}
+
+                  {/* Uitleg */}
+                  <div style={{ marginTop:12, padding:"10px 12px", background:"#0d0d0d", borderRadius:8, border:"1px solid #1a1a1a" }}>
+                    <div style={{ fontSize:10, color:"#333", fontWeight:700, textTransform:"uppercase", letterSpacing:0.7, marginBottom:6 }}>
+                      Waarom SOX voor jouw portfolio?
+                    </div>
+                    <div style={{ fontSize:11, color:"#2a2a2a", lineHeight:1.7 }}>
+                      SOX meet direct het sentiment in halfgeleiders — jouw portfolio is ~50% semi's.
+                      Als SOX >20% boven 200DMA staat, is de sector overbought en verhoog je het risico op een correctie.
+                      Onder de 200DMA is historisch het beste koopmoment voor ASML, TSM en MU.
+                    </div>
+                  </div>
+                </>
+              ) : (
+                <div style={{ color:"#333", fontSize:12 }}>SOX data laden…</div>
+              )}
+            </div>
+
+            {/* AAII Sentiment — handmatig invoeren (geen publieke API) */}
+            <div style={{ background:"#070707", border:"1px solid #141414", borderRadius:12, padding:"14px 16px" }}>
+              <div style={{ fontSize:10, color:"#444", textTransform:"uppercase", letterSpacing:1.2, marginBottom:12 }}>
+                AAII Sentiment — wekelijks
+              </div>
+
+              {/* Static display — user updates manually each Thursday */}
+              <div style={{ marginBottom:12 }}>
+                <div style={{ fontSize:10, color:"#333", marginBottom:6 }}>Laatste survey (elke donderdag)</div>
+                <div style={{ display:"flex", gap:8, marginBottom:8 }}>
+                  {[
+                    { label:"Bullish", pct: data?.aaii?.bull ?? 32, color:"#00e5a0", avg:37.5 },
+                    { label:"Neutral", pct: data?.aaii?.neutral ?? 33, color:"#f5c842", avg:31.5 },
+                    { label:"Bearish", pct: data?.aaii?.bear ?? 35, color:"#ff6b6b", avg:31.0 },
+                  ].map(s => (
+                    <div key={s.label} style={{ flex:1, textAlign:"center" }}>
+                      <div style={{ fontSize:9, color:"#333", marginBottom:4, textTransform:"uppercase", letterSpacing:0.5 }}>{s.label}</div>
+                      <div style={{ fontFamily:"monospace", fontSize:20, fontWeight:700, color:s.color }}>{s.pct}%</div>
+                      <div style={{ fontSize:8, color:"#2a2a2a", marginTop:2 }}>avg {s.avg}%</div>
+                      {/* Bar */}
+                      <div style={{ height:3, background:"#1a1a1a", borderRadius:2, marginTop:4, position:"relative" }}>
+                        <div style={{ height:"100%", width:`${s.pct}%`, background:s.color, borderRadius:2, opacity:0.6 }}/>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Bull-Bear spread */}
+                {(() => {
+                  const bull = data?.aaii?.bull ?? 32;
+                  const bear = data?.aaii?.bear ?? 35;
+                  const spread = bull - bear;
+                  const spreadColor = spread > 10 ? "#ff9966" : spread < -10 ? "#00e5a0" : "#f5c842";
+                  return (
+                    <div style={{ padding:"8px 10px", background:"#0a0a0a", borderRadius:6, border:`1px solid ${spreadColor}22`, marginBottom:10 }}>
+                      <span style={{ fontSize:10, color:"#444" }}>Bull-Bear spread: </span>
+                      <span style={{ fontFamily:"monospace", fontSize:13, fontWeight:700, color:spreadColor }}>
+                        {spread > 0 ? "+" : ""}{spread}%
+                      </span>
+                      <span style={{ fontSize:10, color:"#333", marginLeft:8 }}>
+                        {spread < -10 ? "Historisch koopsignaal (bearishness piek)" :
+                         spread > 10 ? "Voorzichtig — hoge bullishness = contrarian waarschuwing" :
+                         "Neutraal sentiment"}
+                      </span>
+                    </div>
+                  );
+                })()}
+              </div>
+
+              {/* Uitleg */}
+              <div style={{ padding:"10px 12px", background:"#0d0d0d", borderRadius:8, border:"1px solid #1a1a1a", marginBottom:10 }}>
+                <div style={{ fontSize:10, color:"#333", fontWeight:700, textTransform:"uppercase", letterSpacing:0.7, marginBottom:6 }}>
+                  Wat is AAII en waarom relevant?
+                </div>
+                <div style={{ fontSize:11, color:"#2a2a2a", lineHeight:1.7 }}>
+                  <strong style={{ color:"#444" }}>AAII</strong> = American Association of Individual Investors.
+                  Wekelijkse enquête (1987–nu) onder +160.000 leden: bull/neutral/bear voor de komende 6 maanden.
+                  Het is een <strong style={{ color:"#555" }}>contrarian indicator</strong> — extreme bearishness (&lt;20% bull)
+                  correleert historisch met marktbodems. Extreme bullishness (&gt;55%) met pieken.
+                  <br/><br/>
+                  <strong style={{ color:"#444" }}>Historisch gemiddelde:</strong> 37.5% bull · 31.5% neutral · 31% bear.
+                  Een bull-bear spread onder -20% is een van de sterkste koopsignalen in de markt.
+                </div>
+              </div>
+
+              <div style={{ fontSize:10, color:"#2a2a2a", fontStyle:"italic" }}>
+                ⓘ Update elke donderdag via <span style={{ color:"#444" }}>aaii.com/sentimentsurvey</span>
+              </div>
+            </div>
+          </div>{/* end SOX + AAII row */}
 
           {/* ── Fear & Greed History Chart ── */}
           {fgHistory.length > 1 && (
@@ -3175,6 +3350,15 @@ function MarktTab() {
                   ? { signal: "⚠️", text: `Fear & Greed at ${data?.fearGreed?.score} (greed). Wait for a pullback or be more selective.`, color: "#ff6b6b" }
                   : { signal: "➡️", text: `Fear & Greed at ${data?.fearGreed?.score} (${data?.fearGreed?.rating || "neutral"}). Mixed sentiment.`, color: "#888" },
 
+                data?.sox && data?.sox200dma && (() => {
+                  const pct = ((data.sox - data.sox200dma) / data.sox200dma * 100).toFixed(1);
+                  if (data.sox < data.sox200dma * 0.90)
+                    return { signal: "✅", text: `SOX ${pct}% onder 200DMA — semicons in historische koopzone. Jouw portfolio profiteert het meest van dit soort correcties.`, color: "#00e5a0" };
+                  if (data.sox > data.sox200dma * 1.20)
+                    return { signal: "⚠️", text: `SOX ${pct}% boven 200DMA — semicons extended. Verhoog voorzichtigheid met nieuwe semicon posities.`, color: "#ff6b6b" };
+                  return { signal: "➡️", text: `SOX ${pct}% vs 200DMA — semicons in normale range.`, color: "#888" };
+                })(),
+
                 data?.treasury10y > 4.5
                   ? { signal: "⚠️", text: `10yr yield at ${data?.treasury10y?.toFixed(2)}% — high. Growth stocks (tech/semi) face extra pressure. Higher discount rate = lower fair values.`, color: "#f5c842" }
                   : { signal: "✅", text: `10yr yield at ${data?.treasury10y?.toFixed(2)}% — acceptable for growth stocks.`, color: "#00e5a0" },
@@ -3192,6 +3376,306 @@ function MarktTab() {
     </div>
   );
 }
+
+// ── Opportunity Scanner Tab (Rule #1 Edition) ───────────────────────────────
+function ScannerTab() {
+  const [scans, setScans] = useState([]);
+  const [watchlist, setWatchlist] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [running, setRunning] = useState(false);
+  const [lastRun, setLastRun] = useState(null);
+  const [view, setView] = useState("opportunities"); // "opportunities" | "all" | "watchlist"
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const [{ data: scanData }, { data: wlData }] = await Promise.all([
+        SB.from("opportunity_scans").select("*").order("scanned_at", { ascending: false }).limit(200),
+        SB.from("rule1_watchlist").select("*").order("symbol"),
+      ]);
+
+      if (scanData?.length) {
+        // Deduplicate: keep most recent scan per symbol
+        const bySymbol = {};
+        for (const row of scanData) {
+          if (!bySymbol[row.symbol]) bySymbol[row.symbol] = row;
+        }
+        setScans(Object.values(bySymbol).sort((a, b) => b.score - a.score));
+        setLastRun(new Date(scanData[0].scanned_at));
+      }
+      if (wlData) setWatchlist(wlData);
+    } catch(e) { console.error(e); }
+    setLoading(false);
+  };
+
+  const runNow = async () => {
+    setRunning(true);
+    try {
+      const r = await fetch(
+        "https://jnuhyhjwoevoleezshum.supabase.co/functions/v1/opportunity-scanner",
+        { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }
+      );
+      const d = await r.json();
+      console.log("Scanner:", d);
+      await load();
+    } catch(e) { console.error(e); }
+    setRunning(false);
+  };
+
+  useEffect(() => { load(); }, []);
+
+  const opportunities = scans.filter(s => s.price_5d_chg_pct <= -15 && (s.peg === null || s.peg < 1.0) && s.score >= 40);
+  const allScans = scans;
+
+  // Moat icon mapping
+  const moatIcon = (type) => {
+    if (!type) return "🏰";
+    if (type.includes("Toll Bridge")) return "🌉";
+    if (type.includes("Brand")) return "👑";
+    if (type.includes("Switching")) return "🔒";
+    if (type.includes("Network")) return "🕸️";
+    if (type.includes("Low Cost")) return "💰";
+    if (type.includes("Secret")) return "🔬";
+    return "🏰";
+  };
+
+  const moatColor = (type) => {
+    if (!type) return "#444";
+    if (type.includes("Toll Bridge")) return "#00e5a0";
+    if (type.includes("Brand")) return "#f5c842";
+    if (type.includes("Switching")) return "#7be0c0";
+    if (type.includes("Network")) return "#ff9966";
+    return "#888";
+  };
+
+  const scoreColor = (s) => s >= 70 ? "#00e5a0" : s >= 50 ? "#f5c842" : s >= 30 ? "#888" : "#333";
+
+  return (
+    <div>
+      {/* Header */}
+      <div style={{ marginBottom: 16 }}>
+        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", gap:12, marginBottom:10 }}>
+          <div>
+            <div style={{ fontSize:18, fontWeight:700, color:"#e0e0e0", marginBottom:4 }}>
+              🎯 Rule #1 Opportunity Scanner
+            </div>
+            <div style={{ fontSize:12, color:"#444", lineHeight:1.6 }}>
+              Scant {watchlist.length} Rule #1 kwaliteits-stocks dagelijks op irrationele koopsignalen
+            </div>
+          </div>
+          <button onClick={runNow} disabled={running} style={{
+            background: running ? "#1a1a1a" : "#00e5a0", border:"none", borderRadius:10,
+            color: running ? "#555" : "#000", padding:"10px 18px", fontSize:13, fontWeight:700,
+            cursor:"pointer", flexShrink:0, minHeight:44, display:"flex", alignItems:"center", gap:8,
+          }}>
+            {running ? <><Spinner size={14}/> Scanning…</> : "▶ Scan Nu"}
+          </button>
+        </div>
+
+        {/* Status bar */}
+        <div style={{ display:"flex", gap:12, flexWrap:"wrap", fontSize:11, color:"#333", alignItems:"center" }}>
+          {lastRun && <span>Laatste: <span style={{ color:"#555" }}>{lastRun.toLocaleString("nl-NL")}</span></span>}
+          <span>Automatisch: <span style={{ color:"#555" }}>weekdagen 19:30</span></span>
+          {opportunities.length > 0 && (
+            <span style={{ background:"#00e5a018", color:"#00e5a0", fontWeight:700,
+              padding:"3px 10px", borderRadius:5, border:"1px solid #00e5a033" }}>
+              🔥 {opportunities.length} koopkans{opportunities.length > 1 ? "en" : ""}
+            </span>
+          )}
+        </div>
+      </div>
+
+      {/* Phil Town uitleg */}
+      <div style={{ background:"#070707", border:"1px solid #1a1a1a", borderRadius:12, padding:"14px 16px", marginBottom:16 }}>
+        <div style={{ fontSize:10, color:"#444", textTransform:"uppercase", letterSpacing:1, marginBottom:12 }}>
+          Phil Town Rule #1 — Hoe de scanner werkt
+        </div>
+        <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(220px, 1fr))", gap:12 }}>
+          {[
+            { icon:"🏰", title:"Moat = duurzame voorsprong", desc:"Town koopt alleen bedrijven met een 'moat' — een structureel concurrentievoordeel. Toll Bridge (monopolie), Brand, Switching Cost, Network effect, Low Cost. Zonder moat geen bescherming." },
+            { icon:"📊", title:"Big Five >10% per jaar", desc:"ROIC, EPS-groei, omzetgroei, equity-groei, vrije kasstroom — allemaal >10% per jaar over 5-10 jaar. Dit bewijst dat de moat echt werkt en de CEO slim alloceert." },
+            { icon:"💲", title:"Margin of Safety 50%", desc:"Town koopt alleen bij 50% korting op de 'sticker price' (intrinsieke waarde). Dat klinkt conservatief, maar zorgt dat je zelfs met fouten in je analyse niet verliest." },
+            { icon:"😱", title:"Irrationele daling = kans", desc:"Zoals CrowdStrike juli 2024 (-40% in 1 dag door IT-outage). Business intact, prijs gecrasht. Town zegt: 'Be greedy when others are fearful.' Precies wat deze scanner detecteert." },
+            { icon:"📉", title:"≥15% daling in 5 dagen", desc:"De primaire trigger. Als een Rule #1 kwaliteitsstock 15%+ daalt zonder fundamentele reden (geen earnings miss, geen guidance cut) is dat een koopsignaal." },
+            { icon:"📐", title:"PEG < 1.0", desc:"Price/Earnings-to-Growth onder 1 = je betaalt minder dan de groei rechtvaardigt. Gecombineerd met een moat = Town's ideale situatie." },
+          ].map(item => (
+            <div key={item.title} style={{ display:"flex", gap:10 }}>
+              <span style={{ fontSize:20, flexShrink:0 }}>{item.icon}</span>
+              <div>
+                <div style={{ fontSize:11, fontWeight:700, color:"#555", marginBottom:3 }}>{item.title}</div>
+                <div style={{ fontSize:11, color:"#2a2a2a", lineHeight:1.65 }}>{item.desc}</div>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* View tabs */}
+      <div style={{ display:"flex", gap:8, marginBottom:14 }}>
+        {[
+          ["opportunities", `🔥 Koopkansen (${opportunities.length})`],
+          ["all", `📋 Alle scans (${allScans.length})`],
+          ["watchlist", `🏰 Rule #1 Watchlist (${watchlist.length})`],
+        ].map(([id, label]) => (
+          <button key={id} onClick={() => setView(id)} style={{
+            padding:"9px 14px", borderRadius:8, border:"1.5px solid",
+            borderColor: view === id ? "#00e5a066" : "#222",
+            background: view === id ? "#00e5a011" : "#0c0c0c",
+            color: view === id ? "#00e5a0" : "#555",
+            fontWeight: view === id ? 700 : 500, fontSize:12, cursor:"pointer", minHeight:40,
+          }}>{label}</button>
+        ))}
+      </div>
+
+      {loading ? (
+        <div style={{ display:"flex", alignItems:"center", gap:10, color:"#333", fontFamily:"monospace", padding:"40px 0" }}>
+          <Spinner/> Laden…
+        </div>
+      ) : (
+
+        <>
+          {/* ── KOOPKANSEN ── */}
+          {view === "opportunities" && (
+            opportunities.length === 0 ? (
+              <div style={{ background:"#070707", borderRadius:12, padding:"30px 20px", textAlign:"center", border:"1px solid #141414" }}>
+                <div style={{ fontSize:24, marginBottom:10 }}>✅</div>
+                <div style={{ fontSize:14, fontWeight:700, color:"#555", marginBottom:6 }}>Geen actieve koopkansen</div>
+                <div style={{ fontSize:12, color:"#2a2a2a", lineHeight:1.6 }}>
+                  Goed nieuws — de markt is rationeel geprijsd voor alle Rule #1 kwaliteits-stocks.<br/>
+                  De scanner draait dagelijks om 19:30 of klik 'Scan Nu'.
+                </div>
+              </div>
+            ) : (
+              <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
+                {opportunities.map(scan => {
+                  const wl = watchlist.find(w => w.symbol === scan.symbol);
+                  return (
+                    <div key={scan.symbol} style={{
+                      background:"#070707", border:"1.5px solid #00e5a033", borderRadius:12, padding:"16px",
+                    }}>
+                      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:12 }}>
+                        <div>
+                          <span style={{ fontFamily:"monospace", fontWeight:700, fontSize:20, color:"#e0e0e0" }}>{scan.symbol}</span>
+                          <span style={{ marginLeft:10, fontSize:11, fontWeight:700, color:"#00e5a0",
+                            background:"#00e5a018", borderRadius:6, padding:"3px 10px" }}>KOOPKANS</span>
+                          {wl && (
+                            <span style={{ marginLeft:8, fontSize:11, color:moatColor(wl.moat_type) }}>
+                              {moatIcon(wl.moat_type)} {wl.moat_type}
+                            </span>
+                          )}
+                        </div>
+                        <div style={{ textAlign:"right" }}>
+                          <div style={{ fontFamily:"monospace", fontSize:24, fontWeight:700, color:scoreColor(scan.score) }}>{scan.score}</div>
+                          <div style={{ fontSize:9, color:"#333" }}>/ 100</div>
+                        </div>
+                      </div>
+                      {wl?.moat_note && (
+                        <div style={{ fontSize:11, color:"#444", marginBottom:10, lineHeight:1.5 }}>{wl.moat_note}</div>
+                      )}
+                      <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(110px, 1fr))", gap:8, marginBottom:10 }}>
+                        {[
+                          { label:"PEG", value: scan.peg ? scan.peg.toFixed(2) : "—",
+                            color: scan.peg < 0.75 ? "#00e5a0" : scan.peg < 1.0 ? "#7be0c0" : "#f5c842" },
+                          { label:"5 dag change", value: `${scan.price_5d_chg_pct?.toFixed(1)}%`,
+                            color: scan.price_5d_chg_pct <= -15 ? "#00e5a0" : "#f5c842" },
+                          { label:"vs S&P500", value: scan.price_vs_sp500 != null ? `${scan.price_vs_sp500 > 0?"+":""}${scan.price_vs_sp500?.toFixed(1)}%` : "—",
+                            color: scan.price_vs_sp500 <= -10 ? "#00e5a0" : "#888" },
+                          { label:"Prijs", value: scan.price ? `$${scan.price.toFixed(0)}` : "—", color:"#888" },
+                          { label:"Zone", value: scan.valuation_zone || "—", color: scan.in_buy_zone ? "#00e5a0" : "#888" },
+                        ].map(m => (
+                          <div key={m.label} style={{ background:"#0c0c0c", borderRadius:8, padding:"8px 10px" }}>
+                            <div style={{ fontSize:9, color:"#333", textTransform:"uppercase", letterSpacing:0.5, marginBottom:3 }}>{m.label}</div>
+                            <div style={{ fontFamily:"monospace", fontSize:14, fontWeight:700, color:m.color }}>{m.value}</div>
+                          </div>
+                        ))}
+                      </div>
+                      {scan.signal_reason && scan.signal_reason !== "Geen sterk signaal" && (
+                        <div style={{ fontSize:11, color:"#555", fontStyle:"italic", lineHeight:1.5 }}>{scan.signal_reason}</div>
+                      )}
+                      <div style={{ fontSize:9, color:"#222", marginTop:8 }}>
+                        Gescand: {new Date(scan.scanned_at).toLocaleString("nl-NL")}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )
+          )}
+
+          {/* ── ALLE SCANS ── */}
+          {view === "all" && (
+            allScans.length === 0 ? (
+              <div style={{ color:"#2a2a2a", fontFamily:"monospace", textAlign:"center", padding:"40px 0" }}>
+                Nog geen scan resultaten. Klik 'Scan Nu'.
+              </div>
+            ) : (
+              <div style={{ display:"flex", flexDirection:"column", gap:6 }}>
+                {allScans.map(scan => {
+                  const wl = watchlist.find(w => w.symbol === scan.symbol);
+                  const isOpp = scan.price_5d_chg_pct <= -15 && (scan.peg === null || scan.peg < 1.0);
+                  return (
+                    <div key={scan.symbol} style={{
+                      background:"#070707",
+                      border:`1px solid ${isOpp ? "#00e5a033" : "#141414"}`,
+                      borderRadius:10, padding:"12px 14px",
+                      display:"flex", alignItems:"center", gap:12, flexWrap:"wrap",
+                    }}>
+                      <div style={{ minWidth:60 }}>
+                        <span style={{ fontFamily:"monospace", fontWeight:700, fontSize:15, color:"#e0e0e0" }}>{scan.symbol}</span>
+                        {isOpp && <span style={{ fontSize:9, color:"#00e5a0", display:"block", marginTop:1 }}>KOOPKANS</span>}
+                      </div>
+                      {wl && (
+                        <span style={{ fontSize:10, color:moatColor(wl.moat_type) }}>
+                          {moatIcon(wl.moat_type)} {wl.moat_type}
+                        </span>
+                      )}
+                      <div style={{ fontFamily:"monospace", fontSize:18, fontWeight:700, color:scoreColor(scan.score), marginLeft:"auto" }}>
+                        {scan.score}<span style={{ fontSize:10, color:"#333" }}>/100</span>
+                      </div>
+                      <div style={{ fontFamily:"monospace", fontSize:13, color: scan.peg < 1 ? "#00e5a0" : scan.peg < 1.5 ? "#f5c842" : "#888" }}>
+                        PEG {scan.peg ? scan.peg.toFixed(2) : "—"}
+                      </div>
+                      <div style={{ fontFamily:"monospace", fontSize:13, color: scan.price_5d_chg_pct <= -15 ? "#00e5a0" : scan.price_5d_chg_pct < 0 ? "#f5c842" : "#ff6b6b" }}>
+                        {scan.price_5d_chg_pct > 0 ? "+" : ""}{scan.price_5d_chg_pct?.toFixed(1)}% 5d
+                      </div>
+                      <div style={{ fontSize:11, color:"#2a2a2a", maxWidth:200 }}>{scan.signal_reason}</div>
+                    </div>
+                  );
+                })}
+              </div>
+            )
+          )}
+
+          {/* ── RULE #1 WATCHLIST ── */}
+          {view === "watchlist" && (
+            <div>
+              <div style={{ fontSize:11, color:"#333", marginBottom:12, lineHeight:1.6 }}>
+                <strong style={{ color:"#555" }}>Moat types:</strong>{" "}
+                🌉 Toll Bridge (monopolie) · 👑 Brand · 🔒 Switching Cost · 🕸️ Network Effect · 💰 Low Cost · 🔬 Secret (patent/tech)
+              </div>
+              <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(280px, 1fr))", gap:8 }}>
+                {watchlist.map(item => (
+                  <div key={item.symbol} style={{
+                    background:"#070707", border:"1px solid #141414", borderRadius:10, padding:"12px 14px",
+                  }}>
+                    <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:6 }}>
+                      <span style={{ fontFamily:"monospace", fontWeight:700, fontSize:15, color:"#e0e0e0" }}>{item.symbol}</span>
+                      <span style={{ fontSize:11, color:moatColor(item.moat_type) }}>
+                        {moatIcon(item.moat_type)} {item.moat_type}
+                      </span>
+                    </div>
+                    <div style={{ fontSize:11, color:"#2a2a2a", lineHeight:1.5 }}>{item.moat_note}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
 
 // ── App ───────────────────────────────────────────────────────────────────────
 export default function App() {
@@ -3236,6 +3720,7 @@ export default function App() {
     { id: "valuation", label: "Valuation",  icon: "chart" },
     { id: "intel",     label: "⚡ Edge Intel", icon: "chart" },
     { id: "peg",       label: "PEG Chart",  icon: "chart" },
+    { id: "scanner",   label: "🎯 Scanner",  icon: "chart" },
   ];
 
   return (
@@ -3453,6 +3938,9 @@ export default function App() {
             </div>
             <div style={{ display: tab === "intel" ? "block" : "none" }}>
               <EdgeIntelTab/>
+            </div>
+            <div style={{ display: tab === "scanner" ? "block" : "none" }}>
+              <ScannerTab/>
             </div>
             <div style={{ display: tab === "peg" ? "block" : "none" }}>
               <PEGChartTab portfolioSymbols={positions.map(p => p.symbol)}/>
