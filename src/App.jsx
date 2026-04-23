@@ -3379,31 +3379,27 @@ function MarktTab() {
 
 // ── Opportunity Scanner Tab (Rule #1 Edition) ───────────────────────────────
 function ScannerTab() {
-  const [scans, setScans] = useState([]);
+  const [scans, setScans]         = useState([]);
   const [watchlist, setWatchlist] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [running, setRunning] = useState(false);
-  const [lastRun, setLastRun] = useState(null);
-  const [view, setView] = useState("opportunities"); // "opportunities" | "all" | "watchlist"
+  const [loading, setLoading]     = useState(true);
+  const [running, setRunning]     = useState(false);
+  const [lastRun, setLastRun]     = useState(null);
+  const [view, setView]           = useState("koopkansen");
 
   const load = async () => {
     setLoading(true);
     try {
-      const [{ data: scanData }, { data: wlData }] = await Promise.all([
-        SB.from("opportunity_scans").select("*").order("scanned_at", { ascending: false }).limit(200),
+      const [{ data: sd }, { data: wd }] = await Promise.all([
+        SB.from("opportunity_scans").select("*").order("scanned_at", { ascending: false }).limit(300),
         SB.from("rule1_watchlist").select("*").order("symbol"),
       ]);
-
-      if (scanData?.length) {
-        // Deduplicate: keep most recent scan per symbol
-        const bySymbol = {};
-        for (const row of scanData) {
-          if (!bySymbol[row.symbol]) bySymbol[row.symbol] = row;
-        }
-        setScans(Object.values(bySymbol).sort((a, b) => b.score - a.score));
-        setLastRun(new Date(scanData[0].scanned_at));
+      if (sd?.length) {
+        const by = {};
+        for (const r of sd) if (!by[r.symbol]) by[r.symbol] = r;
+        setScans(Object.values(by).sort((a, b) => b.score - a.score));
+        setLastRun(new Date(sd[0].scanned_at));
       }
-      if (wlData) setWatchlist(wlData);
+      if (wd) setWatchlist(wd);
     } catch(e) { console.error(e); }
     setLoading(false);
   };
@@ -3415,8 +3411,7 @@ function ScannerTab() {
         "https://jnuhyhjwoevoleezshum.supabase.co/functions/v1/opportunity-scanner",
         { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }
       );
-      const d = await r.json();
-      console.log("Scanner:", d);
+      await r.json();
       await load();
     } catch(e) { console.error(e); }
     setRunning(false);
@@ -3424,43 +3419,101 @@ function ScannerTab() {
 
   useEffect(() => { load(); }, []);
 
-  const opportunities = scans.filter(s => s.price_5d_chg_pct <= -15 && (s.peg === null || s.peg < 1.0) && s.score >= 40);
-  const allScans = scans;
+  // Signal type groupings
+  const panicDips    = scans.filter(s => (s.signal_type === "panic_dip" || s.signal_type === "both") && s.score >= 30);
+  const undervalued  = scans.filter(s => (s.signal_type === "undervalued" || s.signal_type === "both") && s.score >= 30);
+  const both         = scans.filter(s => s.signal_type === "both" && s.score >= 30);
+  const totalOpps    = [...new Set([...panicDips, ...undervalued].map(s => s.symbol))].length;
 
-  // Moat icon mapping
-  const moatIcon = (type) => {
-    if (!type) return "🏰";
-    if (type.includes("Toll Bridge")) return "🌉";
-    if (type.includes("Brand")) return "👑";
-    if (type.includes("Switching")) return "🔒";
-    if (type.includes("Network")) return "🕸️";
-    if (type.includes("Low Cost")) return "💰";
-    if (type.includes("Secret")) return "🔬";
-    return "🏰";
+  const moatIcon  = t => !t ? "🏰" : t.includes("Toll") ? "🌉" : t.includes("Brand") ? "👑" : t.includes("Switch") ? "🔒" : t.includes("Network") ? "🕸️" : t.includes("Low") ? "💰" : t.includes("Secret") ? "🔬" : "🏰";
+  const moatColor = t => !t ? "#444" : t.includes("Toll") ? "#00e5a0" : t.includes("Brand") ? "#f5c842" : t.includes("Switch") ? "#7be0c0" : t.includes("Network") ? "#ff9966" : "#888";
+  const scoreColor = s => s >= 70 ? "#00e5a0" : s >= 50 ? "#f5c842" : s >= 30 ? "#888" : "#333";
+
+  // Shared scan card component (inline)
+  const ScanCard = ({ scan, highlight }) => {
+    const wl = watchlist.find(w => w.symbol === scan.symbol);
+    const mosPctNum = scan.mos_pct != null ? Number(scan.mos_pct) : null;
+    const mosBelowSticker = mosPctNum != null && mosPctNum <= 0;
+    return (
+      <div style={{
+        background: "#070707",
+        border: `1.5px solid ${highlight ? "#00e5a033" : "#141414"}`,
+        borderRadius: 12, padding: "14px 16px",
+      }}>
+        {/* Top row */}
+        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:10 }}>
+          <div>
+            <span style={{ fontFamily:"monospace", fontWeight:700, fontSize:18, color:"#e0e0e0" }}>{scan.symbol}</span>
+            {scan.signal_type === "both" && (
+              <span style={{ marginLeft:8, fontSize:10, fontWeight:700, color:"#f5c842",
+                background:"#f5c84218", borderRadius:5, padding:"2px 8px" }}>PANIC + VALUE</span>
+            )}
+            {wl && (
+              <span style={{ marginLeft:8, fontSize:11, color:moatColor(wl.moat_type) }}>
+                {moatIcon(wl.moat_type)} {wl.moat_type}
+              </span>
+            )}
+          </div>
+          <div style={{ textAlign:"right" }}>
+            <div style={{ fontFamily:"monospace", fontSize:22, fontWeight:700, color:scoreColor(scan.score) }}>{scan.score}</div>
+            <div style={{ fontSize:9, color:"#333" }}>/100</div>
+          </div>
+        </div>
+
+        {/* Moat note */}
+        {wl?.moat_note && (
+          <div style={{ fontSize:11, color:"#444", marginBottom:10, lineHeight:1.5 }}>{wl.moat_note}</div>
+        )}
+
+        {/* Metrics */}
+        <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(100px, 1fr))", gap:8, marginBottom:10 }}>
+          {[
+            { label:"Prijs", value: scan.price ? `$${Number(scan.price).toFixed(0)}` : "—", color:"#888" },
+            { label:"Sticker Price", value: scan.sticker_price ? `$${Number(scan.sticker_price).toFixed(0)}` : "—",
+              color: scan.price && scan.sticker_price && scan.price < scan.sticker_price ? "#00e5a0" : "#f5c842" },
+            { label:"MOS Prijs (30%)", value: scan.mos_price ? `$${Number(scan.mos_price).toFixed(0)}` : "—",
+              color: mosBelowSticker ? "#00e5a0" : "#888" },
+            { label:"Korting", value: mosPctNum != null ? `${mosPctNum > 0 ? "+" : ""}${mosPctNum.toFixed(0)}%` : "—",
+              color: mosPctNum != null && mosPctNum <= -20 ? "#00e5a0" : mosPctNum != null && mosPctNum <= 0 ? "#7be0c0" : "#ff6b6b" },
+            { label:"PEG", value: scan.peg ? Number(scan.peg).toFixed(2) : "—",
+              color: Number(scan.peg) < 0.75 ? "#00e5a0" : Number(scan.peg) < 1.0 ? "#7be0c0" : "#888" },
+            { label:"5-dag", value: scan.price_5d_chg_pct != null ? `${Number(scan.price_5d_chg_pct) > 0 ? "+" : ""}${Number(scan.price_5d_chg_pct).toFixed(1)}%` : "—",
+              color: Number(scan.price_5d_chg_pct) <= -15 ? "#00e5a0" : Number(scan.price_5d_chg_pct) < 0 ? "#f5c842" : "#ff6b6b" },
+          ].map(m => (
+            <div key={m.label} style={{ background:"#0c0c0c", borderRadius:8, padding:"8px 10px" }}>
+              <div style={{ fontSize:9, color:"#333", textTransform:"uppercase", letterSpacing:0.5, marginBottom:3 }}>{m.label}</div>
+              <div style={{ fontFamily:"monospace", fontSize:13, fontWeight:700, color:m.color }}>{m.value}</div>
+            </div>
+          ))}
+        </div>
+
+        {/* Sticker price context */}
+        {scan.growth_rate_used && (
+          <div style={{ fontSize:10, color:"#2a2a2a", marginBottom:6 }}>
+            Sticker berekend met {scan.growth_rate_used}% groei × PE {scan.future_pe_used}× → 15% discount rate
+          </div>
+        )}
+
+        {/* Signal reasons */}
+        {scan.signal_reason && scan.signal_reason !== "Geen signaal" && (
+          <div style={{ fontSize:11, color:"#555", fontStyle:"italic", lineHeight:1.5 }}>{scan.signal_reason}</div>
+        )}
+        <div style={{ fontSize:9, color:"#222", marginTop:8 }}>
+          {new Date(scan.scanned_at).toLocaleString("nl-NL")}
+        </div>
+      </div>
+    );
   };
-
-  const moatColor = (type) => {
-    if (!type) return "#444";
-    if (type.includes("Toll Bridge")) return "#00e5a0";
-    if (type.includes("Brand")) return "#f5c842";
-    if (type.includes("Switching")) return "#7be0c0";
-    if (type.includes("Network")) return "#ff9966";
-    return "#888";
-  };
-
-  const scoreColor = (s) => s >= 70 ? "#00e5a0" : s >= 50 ? "#f5c842" : s >= 30 ? "#888" : "#333";
 
   return (
     <div>
       {/* Header */}
-      <div style={{ marginBottom: 16 }}>
+      <div style={{ marginBottom:16 }}>
         <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", gap:12, marginBottom:10 }}>
           <div>
-            <div style={{ fontSize:18, fontWeight:700, color:"#e0e0e0", marginBottom:4 }}>
-              🎯 Rule #1 Opportunity Scanner
-            </div>
-            <div style={{ fontSize:12, color:"#444", lineHeight:1.6 }}>
-              Scant {watchlist.length} Rule #1 kwaliteits-stocks dagelijks op irrationele koopsignalen
+            <div style={{ fontSize:18, fontWeight:700, color:"#e0e0e0", marginBottom:4 }}>🎯 Rule #1 Scanner</div>
+            <div style={{ fontSize:12, color:"#444" }}>
+              {watchlist.length} moat stocks · 2 signaaltypen: panic dip + structureel ondergewaardeerd
             </div>
           </div>
           <button onClick={runNow} disabled={running} style={{
@@ -3471,54 +3524,29 @@ function ScannerTab() {
             {running ? <><Spinner size={14}/> Scanning…</> : "▶ Scan Nu"}
           </button>
         </div>
-
-        {/* Status bar */}
-        <div style={{ display:"flex", gap:12, flexWrap:"wrap", fontSize:11, color:"#333", alignItems:"center" }}>
+        <div style={{ display:"flex", gap:12, flexWrap:"wrap", fontSize:11, color:"#333" }}>
           {lastRun && <span>Laatste: <span style={{ color:"#555" }}>{lastRun.toLocaleString("nl-NL")}</span></span>}
           <span>Automatisch: <span style={{ color:"#555" }}>weekdagen 19:30</span></span>
-          {opportunities.length > 0 && (
-            <span style={{ background:"#00e5a018", color:"#00e5a0", fontWeight:700,
-              padding:"3px 10px", borderRadius:5, border:"1px solid #00e5a033" }}>
-              🔥 {opportunities.length} koopkans{opportunities.length > 1 ? "en" : ""}
+          {totalOpps > 0 && (
+            <span style={{ color:"#00e5a0", fontWeight:700,
+              background:"#00e5a018", padding:"2px 10px", borderRadius:5, border:"1px solid #00e5a033" }}>
+              🔥 {totalOpps} koopkans{totalOpps > 1 ? "en" : ""}
             </span>
           )}
         </div>
       </div>
 
-      {/* Phil Town uitleg */}
-      <div style={{ background:"#070707", border:"1px solid #1a1a1a", borderRadius:12, padding:"14px 16px", marginBottom:16 }}>
-        <div style={{ fontSize:10, color:"#444", textTransform:"uppercase", letterSpacing:1, marginBottom:12 }}>
-          Phil Town Rule #1 — Hoe de scanner werkt
-        </div>
-        <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(220px, 1fr))", gap:12 }}>
-          {[
-            { icon:"🏰", title:"Moat = duurzame voorsprong", desc:"Town koopt alleen bedrijven met een 'moat' — een structureel concurrentievoordeel. Toll Bridge (monopolie), Brand, Switching Cost, Network effect, Low Cost. Zonder moat geen bescherming." },
-            { icon:"📊", title:"Big Five >10% per jaar", desc:"ROIC, EPS-groei, omzetgroei, equity-groei, vrije kasstroom — allemaal >10% per jaar over 5-10 jaar. Dit bewijst dat de moat echt werkt en de CEO slim alloceert." },
-            { icon:"💲", title:"Margin of Safety 50%", desc:"Town koopt alleen bij 50% korting op de 'sticker price' (intrinsieke waarde). Dat klinkt conservatief, maar zorgt dat je zelfs met fouten in je analyse niet verliest." },
-            { icon:"😱", title:"Irrationele daling = kans", desc:"Zoals CrowdStrike juli 2024 (-40% in 1 dag door IT-outage). Business intact, prijs gecrasht. Town zegt: 'Be greedy when others are fearful.' Precies wat deze scanner detecteert." },
-            { icon:"📉", title:"≥15% daling in 5 dagen", desc:"De primaire trigger. Als een Rule #1 kwaliteitsstock 15%+ daalt zonder fundamentele reden (geen earnings miss, geen guidance cut) is dat een koopsignaal." },
-            { icon:"📐", title:"PEG < 1.0", desc:"Price/Earnings-to-Growth onder 1 = je betaalt minder dan de groei rechtvaardigt. Gecombineerd met een moat = Town's ideale situatie." },
-          ].map(item => (
-            <div key={item.title} style={{ display:"flex", gap:10 }}>
-              <span style={{ fontSize:20, flexShrink:0 }}>{item.icon}</span>
-              <div>
-                <div style={{ fontSize:11, fontWeight:700, color:"#555", marginBottom:3 }}>{item.title}</div>
-                <div style={{ fontSize:11, color:"#2a2a2a", lineHeight:1.65 }}>{item.desc}</div>
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
-
       {/* View tabs */}
-      <div style={{ display:"flex", gap:8, marginBottom:14 }}>
+      <div style={{ display:"flex", gap:8, marginBottom:14, flexWrap:"wrap" }}>
         {[
-          ["opportunities", `🔥 Koopkansen (${opportunities.length})`],
-          ["all", `📋 Alle scans (${allScans.length})`],
-          ["watchlist", `🏰 Rule #1 Watchlist (${watchlist.length})`],
+          ["koopkansen", `🔥 Alle kansen (${totalOpps})`],
+          ["panic", `📉 Panic Dips (${panicDips.length})`],
+          ["value",  `💲 Ondergewaardeerd (${undervalued.length})`],
+          ["all",   `📋 Alles (${scans.length})`],
+          ["watchlist", `🏰 Watchlist (${watchlist.length})`],
         ].map(([id, label]) => (
           <button key={id} onClick={() => setView(id)} style={{
-            padding:"9px 14px", borderRadius:8, border:"1.5px solid",
+            padding:"8px 14px", borderRadius:8, border:"1.5px solid",
             borderColor: view === id ? "#00e5a066" : "#222",
             background: view === id ? "#00e5a011" : "#0c0c0c",
             color: view === id ? "#00e5a0" : "#555",
@@ -3532,137 +3560,144 @@ function ScannerTab() {
           <Spinner/> Laden…
         </div>
       ) : (
-
         <>
-          {/* ── KOOPKANSEN ── */}
-          {view === "opportunities" && (
-            opportunities.length === 0 ? (
-              <div style={{ background:"#070707", borderRadius:12, padding:"30px 20px", textAlign:"center", border:"1px solid #141414" }}>
+          {/* ── ALLE KANSEN ── */}
+          {view === "koopkansen" && (
+            totalOpps === 0 ? (
+              <div style={{ background:"#070707", borderRadius:12, padding:"30px 20px", textAlign:"center" }}>
                 <div style={{ fontSize:24, marginBottom:10 }}>✅</div>
-                <div style={{ fontSize:14, fontWeight:700, color:"#555", marginBottom:6 }}>Geen actieve koopkansen</div>
+                <div style={{ fontSize:14, fontWeight:700, color:"#555", marginBottom:6 }}>Geen koopkansen gevonden</div>
                 <div style={{ fontSize:12, color:"#2a2a2a", lineHeight:1.6 }}>
-                  Goed nieuws — de markt is rationeel geprijsd voor alle Rule #1 kwaliteits-stocks.<br/>
-                  De scanner draait dagelijks om 19:30 of klik 'Scan Nu'.
+                  Geen van de 70 watchlist stocks staat onder sticker price of heeft een irrationele daling.<br/>
+                  Goed teken — wacht op de volgende correctie.
                 </div>
               </div>
             ) : (
               <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
-                {opportunities.map(scan => {
-                  const wl = watchlist.find(w => w.symbol === scan.symbol);
-                  return (
-                    <div key={scan.symbol} style={{
-                      background:"#070707", border:"1.5px solid #00e5a033", borderRadius:12, padding:"16px",
-                    }}>
-                      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:12 }}>
-                        <div>
-                          <span style={{ fontFamily:"monospace", fontWeight:700, fontSize:20, color:"#e0e0e0" }}>{scan.symbol}</span>
-                          <span style={{ marginLeft:10, fontSize:11, fontWeight:700, color:"#00e5a0",
-                            background:"#00e5a018", borderRadius:6, padding:"3px 10px" }}>KOOPKANS</span>
-                          {wl && (
-                            <span style={{ marginLeft:8, fontSize:11, color:moatColor(wl.moat_type) }}>
-                              {moatIcon(wl.moat_type)} {wl.moat_type}
-                            </span>
-                          )}
-                        </div>
-                        <div style={{ textAlign:"right" }}>
-                          <div style={{ fontFamily:"monospace", fontSize:24, fontWeight:700, color:scoreColor(scan.score) }}>{scan.score}</div>
-                          <div style={{ fontSize:9, color:"#333" }}>/ 100</div>
-                        </div>
-                      </div>
-                      {wl?.moat_note && (
-                        <div style={{ fontSize:11, color:"#444", marginBottom:10, lineHeight:1.5 }}>{wl.moat_note}</div>
-                      )}
-                      <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(110px, 1fr))", gap:8, marginBottom:10 }}>
-                        {[
-                          { label:"PEG", value: scan.peg ? scan.peg.toFixed(2) : "—",
-                            color: scan.peg < 0.75 ? "#00e5a0" : scan.peg < 1.0 ? "#7be0c0" : "#f5c842" },
-                          { label:"5 dag change", value: `${scan.price_5d_chg_pct?.toFixed(1)}%`,
-                            color: scan.price_5d_chg_pct <= -15 ? "#00e5a0" : "#f5c842" },
-                          { label:"vs S&P500", value: scan.price_vs_sp500 != null ? `${scan.price_vs_sp500 > 0?"+":""}${scan.price_vs_sp500?.toFixed(1)}%` : "—",
-                            color: scan.price_vs_sp500 <= -10 ? "#00e5a0" : "#888" },
-                          { label:"Prijs", value: scan.price ? `$${scan.price.toFixed(0)}` : "—", color:"#888" },
-                          { label:"Zone", value: scan.valuation_zone || "—", color: scan.in_buy_zone ? "#00e5a0" : "#888" },
-                        ].map(m => (
-                          <div key={m.label} style={{ background:"#0c0c0c", borderRadius:8, padding:"8px 10px" }}>
-                            <div style={{ fontSize:9, color:"#333", textTransform:"uppercase", letterSpacing:0.5, marginBottom:3 }}>{m.label}</div>
-                            <div style={{ fontFamily:"monospace", fontSize:14, fontWeight:700, color:m.color }}>{m.value}</div>
-                          </div>
-                        ))}
-                      </div>
-                      {scan.signal_reason && scan.signal_reason !== "Geen sterk signaal" && (
-                        <div style={{ fontSize:11, color:"#555", fontStyle:"italic", lineHeight:1.5 }}>{scan.signal_reason}</div>
-                      )}
-                      <div style={{ fontSize:9, color:"#222", marginTop:8 }}>
-                        Gescand: {new Date(scan.scanned_at).toLocaleString("nl-NL")}
-                      </div>
-                    </div>
-                  );
-                })}
+                {/* Both signal types first */}
+                {both.length > 0 && <>
+                  <div style={{ fontSize:10, color:"#f5c842", fontWeight:700, textTransform:"uppercase", letterSpacing:1, margin:"4px 0 2px" }}>
+                    🔥 Dubbel signaal — panic én ondergewaardeerd
+                  </div>
+                  {both.map(s => <ScanCard key={s.symbol} scan={s} highlight={true}/>)}
+                </>}
+                {/* Panic dips */}
+                {panicDips.filter(s => s.signal_type !== "both").length > 0 && <>
+                  <div style={{ fontSize:10, color:"#ff9966", fontWeight:700, textTransform:"uppercase", letterSpacing:1, margin:"8px 0 2px" }}>
+                    📉 Panic Dips — ≥15% daling, PEG &lt;1.0
+                  </div>
+                  {panicDips.filter(s => s.signal_type !== "both").map(s => <ScanCard key={s.symbol} scan={s} highlight={true}/>)}
+                </>}
+                {/* Undervalued */}
+                {undervalued.filter(s => s.signal_type !== "both").length > 0 && <>
+                  <div style={{ fontSize:10, color:"#7be0c0", fontWeight:700, textTransform:"uppercase", letterSpacing:1, margin:"8px 0 2px" }}>
+                    💲 Structureel Ondergewaardeerd — onder sticker price (30% MOS)
+                  </div>
+                  {undervalued.filter(s => s.signal_type !== "both").map(s => <ScanCard key={s.symbol} scan={s} highlight={true}/>)}
+                </>}
               </div>
             )
+          )}
+
+          {/* ── PANIC DIPS ── */}
+          {view === "panic" && (
+            <>
+              <div style={{ background:"#0c0c0c", borderRadius:10, padding:"12px 14px", marginBottom:14, border:"1px solid #1a1a1a" }}>
+                <div style={{ fontSize:11, fontWeight:700, color:"#ff9966", marginBottom:6 }}>📉 Panic Dip Logica</div>
+                <div style={{ fontSize:11, color:"#2a2a2a", lineHeight:1.7 }}>
+                  Stock daalt ≥15% in 5 dagen terwijl de business intact is. PEG onder 1.0 bevestigt dat de prijs
+                  niet de groei rechtvaardigt. Excess decline vs S&P toont irrationele verkoop. CrowdStrike-scenario.
+                </div>
+              </div>
+              {panicDips.length === 0
+                ? <div style={{ color:"#2a2a2a", textAlign:"center", padding:"40px 0", fontFamily:"monospace" }}>Geen panic dips — markt is kalm</div>
+                : <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
+                    {panicDips.map(s => <ScanCard key={s.symbol} scan={s} highlight={true}/>)}
+                  </div>
+              }
+            </>
+          )}
+
+          {/* ── STRUCTUREEL ONDERGEWAARDEERD ── */}
+          {view === "value" && (
+            <>
+              <div style={{ background:"#0c0c0c", borderRadius:10, padding:"12px 14px", marginBottom:14, border:"1px solid #1a1a1a" }}>
+                <div style={{ fontSize:11, fontWeight:700, color:"#7be0c0", marginBottom:6 }}>💲 Phil Town Sticker Price Methode</div>
+                <div style={{ fontSize:11, color:"#2a2a2a", lineHeight:1.7 }}>
+                  <strong style={{ color:"#444" }}>Sticker price</strong> = toekomstige EPS (10jr) × toekomstige PE, teruggerekend met 15% discount rate per jaar.<br/>
+                  <strong style={{ color:"#444" }}>MOS prijs</strong> = sticker price × 70% (30% marge van veiligheid).<br/>
+                  Als de huidige prijs onder de MOS prijs zit, koopt Town. Negatieve "Korting" = prijs zit onder MOS.
+                </div>
+              </div>
+              {undervalued.length === 0
+                ? <div style={{ color:"#2a2a2a", textAlign:"center", padding:"40px 0", fontFamily:"monospace" }}>Geen stocks onder sticker price (30% MOS)</div>
+                : <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
+                    {undervalued.map(s => <ScanCard key={s.symbol} scan={s} highlight={true}/>)}
+                  </div>
+              }
+            </>
           )}
 
           {/* ── ALLE SCANS ── */}
           {view === "all" && (
-            allScans.length === 0 ? (
-              <div style={{ color:"#2a2a2a", fontFamily:"monospace", textAlign:"center", padding:"40px 0" }}>
-                Nog geen scan resultaten. Klik 'Scan Nu'.
-              </div>
-            ) : (
-              <div style={{ display:"flex", flexDirection:"column", gap:6 }}>
-                {allScans.map(scan => {
-                  const wl = watchlist.find(w => w.symbol === scan.symbol);
-                  const isOpp = scan.price_5d_chg_pct <= -15 && (scan.peg === null || scan.peg < 1.0);
-                  return (
-                    <div key={scan.symbol} style={{
-                      background:"#070707",
-                      border:`1px solid ${isOpp ? "#00e5a033" : "#141414"}`,
-                      borderRadius:10, padding:"12px 14px",
-                      display:"flex", alignItems:"center", gap:12, flexWrap:"wrap",
-                    }}>
-                      <div style={{ minWidth:60 }}>
-                        <span style={{ fontFamily:"monospace", fontWeight:700, fontSize:15, color:"#e0e0e0" }}>{scan.symbol}</span>
-                        {isOpp && <span style={{ fontSize:9, color:"#00e5a0", display:"block", marginTop:1 }}>KOOPKANS</span>}
+            scans.length === 0
+              ? <div style={{ color:"#2a2a2a", textAlign:"center", padding:"40px 0", fontFamily:"monospace" }}>Nog geen scans. Klik Scan Nu.</div>
+              : <div style={{ display:"flex", flexDirection:"column", gap:6 }}>
+                  {scans.map(scan => {
+                    const wl = watchlist.find(w => w.symbol === scan.symbol);
+                    const mosPct = scan.mos_pct != null ? Number(scan.mos_pct) : null;
+                    return (
+                      <div key={scan.symbol} style={{
+                        background:"#070707",
+                        border:`1px solid ${scan.signal_type !== "none" ? "#00e5a022" : "#141414"}`,
+                        borderRadius:10, padding:"10px 14px",
+                        display:"flex", alignItems:"center", gap:10, flexWrap:"wrap",
+                      }}>
+                        <span style={{ fontFamily:"monospace", fontWeight:700, fontSize:15, color:"#e0e0e0", minWidth:52 }}>{scan.symbol}</span>
+                        {wl && <span style={{ fontSize:10, color:moatColor(wl.moat_type) }}>{moatIcon(wl.moat_type)}</span>}
+                        <div style={{ fontFamily:"monospace", fontSize:16, fontWeight:700, color:scoreColor(scan.score), marginLeft:"auto" }}>
+                          {scan.score}<span style={{ fontSize:9, color:"#333" }}>/100</span>
+                        </div>
+                        {scan.sticker_price && (
+                          <div style={{ fontSize:11, color:"#444" }}>
+                            Sticker <span style={{ fontFamily:"monospace", color: scan.price < scan.sticker_price ? "#00e5a0" : "#888" }}>
+                              ${Number(scan.sticker_price).toFixed(0)}
+                            </span>
+                          </div>
+                        )}
+                        {mosPct != null && (
+                          <div style={{ fontFamily:"monospace", fontSize:12,
+                            color: mosPct <= -20 ? "#00e5a0" : mosPct <= 0 ? "#7be0c0" : "#555" }}>
+                            {mosPct > 0 ? "+" : ""}{mosPct.toFixed(0)}% vs MOS
+                          </div>
+                        )}
+                        <div style={{ fontFamily:"monospace", fontSize:12,
+                          color: Number(scan.price_5d_chg_pct) <= -15 ? "#00e5a0" : Number(scan.price_5d_chg_pct) < 0 ? "#f5c842" : "#555" }}>
+                          {Number(scan.price_5d_chg_pct) > 0 ? "+" : ""}{Number(scan.price_5d_chg_pct)?.toFixed(1)}% 5d
+                        </div>
+                        {scan.signal_type !== "none" && (
+                          <span style={{ fontSize:9, color:"#00e5a0", fontWeight:700 }}>
+                            {scan.signal_type === "both" ? "🔥" : scan.signal_type === "panic_dip" ? "📉" : "💲"}
+                          </span>
+                        )}
                       </div>
-                      {wl && (
-                        <span style={{ fontSize:10, color:moatColor(wl.moat_type) }}>
-                          {moatIcon(wl.moat_type)} {wl.moat_type}
-                        </span>
-                      )}
-                      <div style={{ fontFamily:"monospace", fontSize:18, fontWeight:700, color:scoreColor(scan.score), marginLeft:"auto" }}>
-                        {scan.score}<span style={{ fontSize:10, color:"#333" }}>/100</span>
-                      </div>
-                      <div style={{ fontFamily:"monospace", fontSize:13, color: scan.peg < 1 ? "#00e5a0" : scan.peg < 1.5 ? "#f5c842" : "#888" }}>
-                        PEG {scan.peg ? scan.peg.toFixed(2) : "—"}
-                      </div>
-                      <div style={{ fontFamily:"monospace", fontSize:13, color: scan.price_5d_chg_pct <= -15 ? "#00e5a0" : scan.price_5d_chg_pct < 0 ? "#f5c842" : "#ff6b6b" }}>
-                        {scan.price_5d_chg_pct > 0 ? "+" : ""}{scan.price_5d_chg_pct?.toFixed(1)}% 5d
-                      </div>
-                      <div style={{ fontSize:11, color:"#2a2a2a", maxWidth:200 }}>{scan.signal_reason}</div>
-                    </div>
-                  );
-                })}
-              </div>
-            )
+                    );
+                  })}
+                </div>
           )}
 
-          {/* ── RULE #1 WATCHLIST ── */}
+          {/* ── WATCHLIST ── */}
           {view === "watchlist" && (
             <div>
               <div style={{ fontSize:11, color:"#333", marginBottom:12, lineHeight:1.6 }}>
-                <strong style={{ color:"#555" }}>Moat types:</strong>{" "}
-                🌉 Toll Bridge (monopolie) · 👑 Brand · 🔒 Switching Cost · 🕸️ Network Effect · 💰 Low Cost · 🔬 Secret (patent/tech)
+                🌉 Toll Bridge · 👑 Brand · 🔒 Switching · 🕸️ Network · 💰 Low Cost · 🔬 Secret
               </div>
-              <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(280px, 1fr))", gap:8 }}>
+              <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(270px, 1fr))", gap:8 }}>
                 {watchlist.map(item => (
-                  <div key={item.symbol} style={{
-                    background:"#070707", border:"1px solid #141414", borderRadius:10, padding:"12px 14px",
-                  }}>
-                    <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:6 }}>
-                      <span style={{ fontFamily:"monospace", fontWeight:700, fontSize:15, color:"#e0e0e0" }}>{item.symbol}</span>
-                      <span style={{ fontSize:11, color:moatColor(item.moat_type) }}>
-                        {moatIcon(item.moat_type)} {item.moat_type}
-                      </span>
+                  <div key={item.symbol} style={{ background:"#070707", border:"1px solid #141414", borderRadius:10, padding:"12px 14px" }}>
+                    <div style={{ display:"flex", justifyContent:"space-between", marginBottom:5 }}>
+                      <span style={{ fontFamily:"monospace", fontWeight:700, fontSize:14, color:"#e0e0e0" }}>{item.symbol}</span>
+                      <span style={{ fontSize:11, color:moatColor(item.moat_type) }}>{moatIcon(item.moat_type)} {item.moat_type}</span>
                     </div>
                     <div style={{ fontSize:11, color:"#2a2a2a", lineHeight:1.5 }}>{item.moat_note}</div>
                   </div>
