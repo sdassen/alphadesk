@@ -3487,12 +3487,24 @@ function ScannerTab() {
           ))}
         </div>
 
-        {/* Sticker price context */}
-        {scan.growth_rate_used && (
-          <div style={{ fontSize:10, color:"#2a2a2a", marginBottom:6 }}>
-            Sticker berekend met {scan.growth_rate_used}% groei × PE {scan.future_pe_used}× → 15% discount rate
-          </div>
-        )}
+        {/* Sticker price context + earnings warning */}
+        <div style={{ display:"flex", gap:8, flexWrap:"wrap", marginBottom:8 }}>
+          {scan.growth_rate_used && (
+            <div style={{ fontSize:10, color:"#2a2a2a", background:"#0c0c0c", borderRadius:5, padding:"3px 8px" }}>
+              Groei {scan.growth_rate_used}% × PE {scan.future_pe_used}× → 15% discount
+            </div>
+          )}
+          {scan.signal_reason?.includes("Earnings over") && (
+            <div style={{ fontSize:10, color:"#f5c842", background:"#f5c84214", border:"1px solid #f5c84233", borderRadius:5, padding:"3px 8px", fontWeight:700 }}>
+              ⚠️ {scan.signal_reason.match(/Earnings over \d+d/)?.[0]}
+            </div>
+          )}
+          {scan.signal_reason?.includes("Post-earnings") && (
+            <div style={{ fontSize:10, color:"#00e5a0", background:"#00e5a014", borderRadius:5, padding:"3px 8px" }}>
+              ✓ Post-earnings daling
+            </div>
+          )}
+        </div>
 
         {/* Signal reasons */}
         {scan.signal_reason && scan.signal_reason !== "Geen signaal" && (
