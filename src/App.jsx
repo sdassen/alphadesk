@@ -3381,6 +3381,7 @@ function MarktTab() {
 function ScannerTab() {
   const [scans, setScans]         = useState([]);
   const [watchlist, setWatchlist] = useState([]);
+  const [exitSignals, setExitSignals] = useState([]);
   const [loading, setLoading]     = useState(true);
   const [running, setRunning]     = useState(false);
   const [lastRun, setLastRun]     = useState(null);
@@ -3389,9 +3390,10 @@ function ScannerTab() {
   const load = async () => {
     setLoading(true);
     try {
-      const [{ data: sd }, { data: wd }] = await Promise.all([
+      const [{ data: sd }, { data: wd }, { data: ed }] = await Promise.all([
         SB.from("opportunity_scans").select("*").order("scanned_at", { ascending: false }).limit(300),
         SB.from("rule1_watchlist").select("*").order("symbol"),
+        SB.from("exit_signals").select("*").order("signal_date", { ascending: false }).limit(20),
       ]);
       if (sd?.length) {
         const by = {};
@@ -3400,6 +3402,7 @@ function ScannerTab() {
         setLastRun(new Date(sd[0].scanned_at));
       }
       if (wd) setWatchlist(wd);
+      if (ed) setExitSignals(ed);
     } catch(e) { console.error(e); }
     setLoading(false);
   };
@@ -3433,7 +3436,29 @@ function ScannerTab() {
   const ScanCard = ({ scan, highlight }) => {
     const wl = watchlist.find(w => w.symbol === scan.symbol);
     const mosPctNum = scan.mos_pct != null ? Number(scan.mos_pct) : null;
-    const mosBelowSticker = mosPctNum != null && mosPctNum <= 0;
+    const price      = scan.price       ? Number(scan.price)       : null;
+    const sticker    = scan.sticker_price ? Number(scan.sticker_price) : null;
+    const mosPrice   = scan.mos_price   ? Number(scan.mos_price)   : null;
+
+    // Where is current price on the ladder?
+    const belowMOS    = price && mosPrice   && price <= mosPrice;
+    const belowSticker= price && sticker    && price <= sticker;
+    const pctFromMOS  = price && mosPrice   ? ((price - mosPrice) / mosPrice * 100) : null;
+
+    // Price ladder: show 3 zones visually
+    const ladderPct = (() => {
+      if (!price || !sticker) return null;
+      const low  = sticker * 0.4;  // extreme bottom
+      const high = sticker * 1.3;  // extended
+      return Math.min(96, Math.max(4, ((price - low) / (high - low)) * 100));
+    })();
+    const mosPct = (() => {
+      if (!mosPrice || !sticker) return null;
+      const low  = sticker * 0.4;
+      const high = sticker * 1.3;
+      return Math.min(96, Math.max(4, ((mosPrice - low) / (high - low)) * 100));
+    })();
+
     return (
       <div style={{
         background: "#070707",
@@ -3453,6 +3478,12 @@ function ScannerTab() {
                 {moatIcon(wl.moat_type)} {wl.moat_type}
               </span>
             )}
+            {scan.insider_bought && (
+              <span style={{ marginLeft:6, fontSize:10, fontWeight:700, color:"#00e5a0",
+                background:"#00e5a018", border:"1px solid #00e5a033", borderRadius:5, padding:"2px 8px" }}>
+                🏦 INSIDER KOCHT
+              </span>
+            )}
           </div>
           <div style={{ textAlign:"right" }}>
             <div style={{ fontFamily:"monospace", fontSize:22, fontWeight:700, color:scoreColor(scan.score) }}>{scan.score}</div>
@@ -3465,42 +3496,135 @@ function ScannerTab() {
           <div style={{ fontSize:11, color:"#444", marginBottom:10, lineHeight:1.5 }}>{wl.moat_note}</div>
         )}
 
-        {/* Metrics */}
-        <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(100px, 1fr))", gap:8, marginBottom:10 }}>
-          {[
-            { label:"Prijs", value: scan.price ? `$${Number(scan.price).toFixed(0)}` : "—", color:"#888" },
-            { label:"Sticker Price", value: scan.sticker_price ? `$${Number(scan.sticker_price).toFixed(0)}` : "—",
-              color: scan.price && scan.sticker_price && scan.price < scan.sticker_price ? "#00e5a0" : "#f5c842" },
-            { label:"MOS Prijs (30%)", value: scan.mos_price ? `$${Number(scan.mos_price).toFixed(0)}` : "—",
-              color: mosBelowSticker ? "#00e5a0" : "#888" },
-            { label:"Korting", value: mosPctNum != null ? `${mosPctNum > 0 ? "+" : ""}${mosPctNum.toFixed(0)}%` : "—",
-              color: mosPctNum != null && mosPctNum <= -20 ? "#00e5a0" : mosPctNum != null && mosPctNum <= 0 ? "#7be0c0" : "#ff6b6b" },
-            { label:"PEG", value: scan.peg ? Number(scan.peg).toFixed(2) : "—",
-              color: Number(scan.peg) < 0.75 ? "#00e5a0" : Number(scan.peg) < 1.0 ? "#7be0c0" : "#888" },
-            { label:"5-dag", value: scan.price_5d_chg_pct != null ? `${Number(scan.price_5d_chg_pct) > 0 ? "+" : ""}${Number(scan.price_5d_chg_pct).toFixed(1)}%` : "—",
-              color: Number(scan.price_5d_chg_pct) <= -15 ? "#00e5a0" : Number(scan.price_5d_chg_pct) < 0 ? "#f5c842" : "#ff6b6b" },
-          ].map(m => (
-            <div key={m.label} style={{ background:"#0c0c0c", borderRadius:8, padding:"8px 10px" }}>
-              <div style={{ fontSize:9, color:"#333", textTransform:"uppercase", letterSpacing:0.5, marginBottom:3 }}>{m.label}</div>
-              <div style={{ fontFamily:"monospace", fontSize:13, fontWeight:700, color:m.color }}>{m.value}</div>
-            </div>
-          ))}
-        </div>
+        {/* ── BUY PRICE LADDER ── */}
+        {sticker && mosPrice && price ? (
+          <div style={{ background:"#0a0a0a", borderRadius:10, padding:"12px 14px", marginBottom:12, border:"1px solid #1a1a1a" }}>
 
-        {/* Sticker price context + earnings warning */}
+            {/* Action label */}
+            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:10 }}>
+              <div style={{ fontSize:11, fontWeight:700,
+                color: belowMOS ? "#00e5a0" : belowSticker ? "#f5c842" : "#ff6b6b" }}>
+                {belowMOS
+                  ? "✅ KOPEN — prijs onder MOS grens"
+                  : belowSticker
+                  ? "👀 WACHTEN — onder sticker maar boven MOS"
+                  : `⏳ NOG NIET — ${pctFromMOS != null ? Math.abs(pctFromMOS).toFixed(0) + "% boven koopgrens" : "boven sticker"}`}
+              </div>
+              <div style={{ fontSize:10, color:"#333" }}>
+                {scan.growth_rate_used ? `${scan.growth_rate_used}% groei · PE ${scan.future_pe_used}×` : ""}
+              </div>
+            </div>
+
+            {/* Ladder bar */}
+            {ladderPct !== null && mosPct !== null && (
+              <div style={{ position:"relative", height:28, marginBottom:10 }}>
+                {/* Background zones */}
+                <div style={{ position:"absolute", left:0, top:8, height:8, width:"100%", borderRadius:4,
+                  background:"linear-gradient(to right, #00e5a022, #00e5a022 " + mosPct + "%, #f5c84222 " + mosPct + "%, #f5c84222 65%, #ff6b6b22 65%, #ff6b6b22)" }}/>
+
+                {/* MOS line */}
+                <div style={{ position:"absolute", left: mosPct + "%", top:4, width:2, height:16,
+                  background:"#00e5a0", borderRadius:1, transform:"translateX(-50%)" }}/>
+                <div style={{ position:"absolute", left: mosPct + "%", top:22, fontSize:8,
+                  color:"#00e5a0", transform:"translateX(-50%)", whiteSpace:"nowrap" }}>
+                  KOOP ${mosPrice.toFixed(0)}
+                </div>
+
+                {/* Sticker line */}
+                <div style={{ position:"absolute", left:"65%", top:4, width:2, height:16,
+                  background:"#f5c842", borderRadius:1 }}/>
+                <div style={{ position:"absolute", left:"65%", top:22, fontSize:8,
+                  color:"#f5c842", transform:"translateX(-50%)", whiteSpace:"nowrap" }}>
+                  FAIR ${sticker.toFixed(0)}
+                </div>
+
+                {/* Current price marker */}
+                <div style={{ position:"absolute", left: ladderPct + "%", top:2, width:10, height:20,
+                  background: belowMOS ? "#00e5a0" : belowSticker ? "#f5c842" : "#ff6b6b",
+                  borderRadius:3, transform:"translateX(-50%)", opacity:0.9 }}/>
+                <div style={{ position:"absolute", left: ladderPct + "%", top:"-14px", fontSize:9,
+                  color: belowMOS ? "#00e5a0" : belowSticker ? "#f5c842" : "#ff6b6b",
+                  fontFamily:"monospace", fontWeight:700, transform:"translateX(-50%)", whiteSpace:"nowrap" }}>
+                  ${price.toFixed(0)}
+                </div>
+              </div>
+            )}
+
+            {/* Price summary row */}
+            <div style={{ display:"flex", gap:8, flexWrap:"wrap", marginTop:16 }}>
+              {[
+                { label:"Huidige prijs", value:`$${price.toFixed(0)}`,
+                  color: belowMOS ? "#00e5a0" : belowSticker ? "#f5c842" : "#888", bold:true },
+                { label:`Koopgrens (MOS)`, value:`$${mosPrice.toFixed(0)}`,
+                  color:"#00e5a0", bold:false },
+                { label:"Sticker (fair value)", value:`$${sticker.toFixed(0)}`,
+                  color:"#f5c842", bold:false },
+                { label:"Verschil met koopgrens", value: pctFromMOS != null
+                  ? `${pctFromMOS > 0 ? "+" : ""}${pctFromMOS.toFixed(0)}%`
+                  : "—",
+                  color: pctFromMOS != null && pctFromMOS <= 0 ? "#00e5a0" : pctFromMOS != null && pctFromMOS <= 20 ? "#f5c842" : "#ff6b6b",
+                  bold: true },
+              ].map(m => (
+                <div key={m.label} style={{ flex:"1 1 80px", background:"#0c0c0c", borderRadius:7, padding:"7px 10px" }}>
+                  <div style={{ fontSize:9, color:"#333", textTransform:"uppercase", letterSpacing:0.4, marginBottom:3 }}>{m.label}</div>
+                  <div style={{ fontFamily:"monospace", fontSize:13, fontWeight: m.bold ? 700 : 500, color:m.color }}>{m.value}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : (
+          /* Fallback if no sticker price */
+          <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(100px, 1fr))", gap:8, marginBottom:10 }}>
+            {[
+              { label:"Prijs", value: price ? `$${price.toFixed(0)}` : "—", color:"#888" },
+              { label:"PEG", value: scan.peg ? Number(scan.peg).toFixed(2) : "—",
+                color: Number(scan.peg) < 0.75 ? "#00e5a0" : Number(scan.peg) < 1.0 ? "#7be0c0" : "#888" },
+              { label:"5-dag", value: scan.price_5d_chg_pct != null
+                ? `${Number(scan.price_5d_chg_pct) > 0 ? "+" : ""}${Number(scan.price_5d_chg_pct).toFixed(1)}%` : "—",
+                color: Number(scan.price_5d_chg_pct) <= -15 ? "#00e5a0" : "#888" },
+            ].map(m => (
+              <div key={m.label} style={{ background:"#0c0c0c", borderRadius:8, padding:"8px 10px" }}>
+                <div style={{ fontSize:9, color:"#333", textTransform:"uppercase", letterSpacing:0.5, marginBottom:3 }}>{m.label}</div>
+                <div style={{ fontFamily:"monospace", fontSize:13, fontWeight:700, color:m.color }}>{m.value}</div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Secondary metrics row */}
         <div style={{ display:"flex", gap:8, flexWrap:"wrap", marginBottom:8 }}>
-          {scan.growth_rate_used && (
-            <div style={{ fontSize:10, color:"#2a2a2a", background:"#0c0c0c", borderRadius:5, padding:"3px 8px" }}>
-              Groei {scan.growth_rate_used}% × PE {scan.future_pe_used}× → 15% discount
+          {scan.peg && (
+            <div style={{ background:"#0c0c0c", borderRadius:6, padding:"4px 10px", fontSize:11 }}>
+              PEG <span style={{ fontFamily:"monospace", fontWeight:700,
+                color: Number(scan.peg) < 0.75 ? "#00e5a0" : Number(scan.peg) < 1.0 ? "#7be0c0" : "#888" }}>
+                {Number(scan.peg).toFixed(2)}
+              </span>
+            </div>
+          )}
+          {scan.price_5d_chg_pct != null && (
+            <div style={{ background:"#0c0c0c", borderRadius:6, padding:"4px 10px", fontSize:11 }}>
+              5d <span style={{ fontFamily:"monospace", fontWeight:700,
+                color: Number(scan.price_5d_chg_pct) <= -15 ? "#00e5a0" : Number(scan.price_5d_chg_pct) < 0 ? "#f5c842" : "#ff6b6b" }}>
+                {Number(scan.price_5d_chg_pct) > 0 ? "+" : ""}{Number(scan.price_5d_chg_pct).toFixed(1)}%
+              </span>
+            </div>
+          )}
+          {scan.peg_percentile != null && scan.peg_percentile >= 0 && (
+            <div style={{ background:"#0c0c0c", borderRadius:6, padding:"4px 10px", fontSize:11 }}>
+              PEG percentiel <span style={{ fontFamily:"monospace", fontWeight:700,
+                color: scan.peg_percentile <= 10 ? "#00e5a0" : scan.peg_percentile <= 25 ? "#7be0c0" : "#f5c842" }}>
+                P{scan.peg_percentile}
+              </span>
             </div>
           )}
           {scan.signal_reason?.includes("Earnings over") && (
-            <div style={{ fontSize:10, color:"#f5c842", background:"#f5c84214", border:"1px solid #f5c84233", borderRadius:5, padding:"3px 8px", fontWeight:700 }}>
+            <div style={{ fontSize:10, color:"#f5c842", background:"#f5c84214",
+              border:"1px solid #f5c84233", borderRadius:5, padding:"4px 10px", fontWeight:700 }}>
               ⚠️ {scan.signal_reason.match(/Earnings over \d+d/)?.[0]}
             </div>
           )}
           {scan.signal_reason?.includes("Post-earnings") && (
-            <div style={{ fontSize:10, color:"#00e5a0", background:"#00e5a014", borderRadius:5, padding:"3px 8px" }}>
+            <div style={{ fontSize:10, color:"#00e5a0", background:"#00e5a014", borderRadius:5, padding:"4px 10px" }}>
               ✓ Post-earnings daling
             </div>
           )}
@@ -3509,6 +3633,11 @@ function ScannerTab() {
         {/* Signal reasons */}
         {scan.signal_reason && scan.signal_reason !== "Geen signaal" && (
           <div style={{ fontSize:11, color:"#555", fontStyle:"italic", lineHeight:1.5 }}>{scan.signal_reason}</div>
+        )}
+        {scan.insider_note && scan.insider_bought && (
+          <div style={{ fontSize:10, color:"#00e5a0", marginTop:6, background:"#00e5a010", borderRadius:5, padding:"4px 8px" }}>
+            🏦 {scan.insider_note}
+          </div>
         )}
         <div style={{ fontSize:9, color:"#222", marginTop:8 }}>
           {new Date(scan.scanned_at).toLocaleString("nl-NL")}
@@ -3555,6 +3684,7 @@ function ScannerTab() {
           ["panic", `📉 Panic Dips (${panicDips.length})`],
           ["value",  `💲 Ondergewaardeerd (${undervalued.length})`],
           ["all",   `📋 Alles (${scans.length})`],
+          ["exits",     `📤 Exit Signalen (${exitSignals.length})`],
           ["watchlist", `🏰 Watchlist (${watchlist.length})`],
         ].map(([id, label]) => (
           <button key={id} onClick={() => setView(id)} style={{
@@ -3696,6 +3826,73 @@ function ScannerTab() {
                     );
                   })}
                 </div>
+          )}
+
+          {/* ── EXIT SIGNALEN ── */}
+          {view === "exits" && (
+            <div>
+              <div style={{ background:"#0c0c0c", borderRadius:10, padding:"12px 14px", marginBottom:14, border:"1px solid #1a1a1a" }}>
+                <div style={{ fontSize:11, fontWeight:700, color:"#ff9966", marginBottom:6 }}>📤 Exit Signaal Logica — Phil Town</div>
+                <div style={{ fontSize:11, color:"#2a2a2a", lineHeight:1.7 }}>
+                  Town verkoopt als de prijs de <strong style={{ color:"#444" }}>sticker price bereikt</strong> — het moment
+                  dat de markt zijn fair value erkent. Boven sticker price betaal je voor toekomstige groei die
+                  nog bewezen moet worden. Een exit signaal verschijnt als de prijs ≥20% boven sticker price staat.
+                  Nabij sticker (&lt;20% erboven) is een waarschuwing om je positie te heroverwegen.
+                </div>
+              </div>
+              {exitSignals.length === 0 ? (
+                <div style={{ color:"#2a2a2a", textAlign:"center", padding:"30px 0", fontFamily:"monospace", fontSize:12 }}>
+                  Geen exit signalen — alle portfolio stocks handelen onder sticker price.
+                </div>
+              ) : (
+                <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+                  {exitSignals.map(ex => {
+                    const pctAbove = Number(ex.pct_above_sticker);
+                    const isStrong = pctAbove >= 20;
+                    return (
+                      <div key={ex.symbol + ex.signal_date} style={{
+                        background:"#070707",
+                        border:`1.5px solid ${isStrong ? "#ff966633" : "#f5c84222"}`,
+                        borderRadius:12, padding:"14px 16px",
+                      }}>
+                        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:10 }}>
+                          <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+                            <span style={{ fontFamily:"monospace", fontWeight:700, fontSize:18, color:"#e0e0e0" }}>{ex.symbol}</span>
+                            <span style={{ fontSize:11, fontWeight:700,
+                              color: isStrong ? "#ff6b6b" : "#f5c842",
+                              background: isStrong ? "#ff6b6b18" : "#f5c84218",
+                              borderRadius:5, padding:"2px 8px" }}>
+                              {isStrong ? "🔴 VERKOOP" : "🟡 OVERWEEG VERKOOP"}
+                            </span>
+                          </div>
+                          <div style={{ textAlign:"right" }}>
+                            <div style={{ fontFamily:"monospace", fontSize:20, fontWeight:700,
+                              color: isStrong ? "#ff6b6b" : "#f5c842" }}>
+                              +{pctAbove.toFixed(0)}%
+                            </div>
+                            <div style={{ fontSize:9, color:"#333" }}>boven sticker</div>
+                          </div>
+                        </div>
+                        <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(120px, 1fr))", gap:8, marginBottom:10 }}>
+                          {[
+                            { label:"Huidige prijs",  value:`$${Number(ex.price).toFixed(0)}`, color:"#e0e0e0" },
+                            { label:"Sticker Price",  value:`$${Number(ex.sticker_price).toFixed(0)}`, color:"#f5c842" },
+                            { label:"Boven sticker",  value:`+${pctAbove.toFixed(0)}%`, color: isStrong ? "#ff6b6b" : "#f5c842" },
+                            { label:"Datum",          value:new Date(ex.signal_date).toLocaleDateString("nl-NL"), color:"#444" },
+                          ].map(m => (
+                            <div key={m.label} style={{ background:"#0c0c0c", borderRadius:8, padding:"8px 10px" }}>
+                              <div style={{ fontSize:9, color:"#333", textTransform:"uppercase", letterSpacing:0.5, marginBottom:3 }}>{m.label}</div>
+                              <div style={{ fontFamily:"monospace", fontSize:13, fontWeight:700, color:m.color }}>{m.value}</div>
+                            </div>
+                          ))}
+                        </div>
+                        <div style={{ fontSize:11, color:"#555", fontStyle:"italic" }}>{ex.signal_reason}</div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
           )}
 
           {/* ── WATCHLIST ── */}
