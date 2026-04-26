@@ -3377,6 +3377,297 @@ function MarktTab() {
   );
 }
 
+// ── Valuation Tracker Tab ────────────────────────────────────────────────────
+function ValuationTrackerTab() {
+  const [rows, setRows]       = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [updated, setUpdated] = useState(null);
+  const [refreshing, setRefreshing] = useState(false);
+  const [sortBy, setSortBy]   = useState("pct_base"); // sort by distance to base
+
+  // Load valuation_config + live prices from Yahoo
+  const load = async (forceRefresh = false) => {
+    if (forceRefresh) setRefreshing(true); else setLoading(true);
+    try {
+      const { data: configs } = await SB.from("valuation_config")
+        .select("symbol,eps_basis,pe_bear_abs,pe_base_abs,pe_bull_abs,note")
+        .neq("symbol", "DEFAULT");
+
+      if (!configs?.length) return;
+
+      // Fetch live EPS + price for each symbol in parallel (batches of 5)
+      const results = [];
+      const BATCH = 5;
+      for (let i = 0; i < configs.length; i += BATCH) {
+        const batch = configs.slice(i, i + BATCH);
+        const fetched = await Promise.all(batch.map(async (cfg) => {
+          try {
+            const r = await fetch(`/api/yahoo?symbol=${cfg.symbol}&endpoint=quoteSummary&modules=defaultKeyStatistics,summaryDetail,financialData`);
+            const d = await r.json();
+            const q = d?.quoteSummary?.result?.[0];
+            if (!q) return null;
+            const sd = q.summaryDetail ?? {};
+            const ks = q.defaultKeyStatistics ?? {};
+            const price     = sd.regularMarketPrice?.raw ?? null;
+            const fwdEPS    = ks.forwardEps?.raw ?? null;
+            const trlEPS    = ks.trailingEps?.raw ?? null;
+            const fwdPE     = sd.forwardPE?.raw ?? ks.forwardPE?.raw ?? null;
+            const trlPE     = sd.trailingPE?.raw ?? null;
+
+            // Use eps_basis from config
+            let baseEPS = null;
+            let epsLabel = "";
+            if (cfg.eps_basis === "forward" && fwdEPS && fwdEPS > 0) {
+              // Distortion check: if fwdEPS > 4× trailing = cyclical peak
+              const distorted = trlEPS && trlEPS > 0 && fwdEPS > trlEPS * 4;
+              baseEPS  = distorted ? trlEPS : fwdEPS;
+              epsLabel = distorted ? `trl $${trlEPS?.toFixed(2)} (fwd distorted)` : `fwd $${fwdEPS?.toFixed(2)}`;
+            } else if (trlEPS && trlEPS > 0) {
+              baseEPS  = trlEPS;
+              epsLabel = `trl $${trlEPS?.toFixed(2)}`;
+            }
+
+            if (!price || !baseEPS || !cfg.pe_base_abs) return null;
+
+            // Valuation bands = EPS × PE multiple
+            const bearPrice = baseEPS * cfg.pe_bear_abs;
+            const basePrice = baseEPS * cfg.pe_base_abs;
+            const bullPrice = baseEPS * cfg.pe_bull_abs;
+
+            // Where is current price relative to base band?
+            const pctBase = ((price - basePrice) / basePrice) * 100;
+            const pctBear = ((price - bearPrice) / bearPrice) * 100;
+
+            // Zone
+            let zone = "", zoneColor = "";
+            if (price <= bearPrice)                    { zone = "DEEP VALUE";  zoneColor = "#00e5a0"; }
+            else if (price <= basePrice * 0.95)        { zone = "BUY ZONE";   zoneColor = "#7be0c0"; }
+            else if (price <= basePrice * 1.05)        { zone = "FAIR VALUE"; zoneColor = "#f5c842"; }
+            else if (price <= bullPrice)               { zone = "PREMIUM";    zoneColor = "#ff9966"; }
+            else                                       { zone = "EXPENSIVE";  zoneColor = "#ff6b6b"; }
+
+            // Bar position (bear → bull range)
+            const barPct = Math.min(98, Math.max(2,
+              ((price - bearPrice) / (bullPrice - bearPrice)) * 100));
+
+            return {
+              symbol: cfg.symbol,
+              price, baseEPS, epsLabel,
+              fwdPE, trlPE,
+              bearPrice: Math.round(bearPrice),
+              basePrice: Math.round(basePrice),
+              bullPrice: Math.round(bullPrice),
+              pctBase: Math.round(pctBase),
+              pctBear: Math.round(pctBear),
+              barPct, zone, zoneColor,
+              note: cfg.note,
+            };
+          } catch { return null; }
+        }));
+        results.push(...fetched.filter(Boolean));
+        await new Promise(r => setTimeout(r, 300));
+      }
+
+      // Sort
+      const sorted = results.sort((a, b) => a.pctBase - b.pctBase);
+      setRows(sorted);
+      setUpdated(new Date());
+    } catch(e) { console.error(e); }
+    setLoading(false);
+    setRefreshing(false);
+  };
+
+  useEffect(() => { load(); }, []);
+
+  const sorted = [...rows].sort((a, b) => {
+    if (sortBy === "pct_base") return a.pctBase - b.pctBase;
+    if (sortBy === "zone") return a.barPct - b.barPct;
+    if (sortBy === "symbol") return a.symbol.localeCompare(b.symbol);
+    return 0;
+  });
+
+  const zoneCount = (z) => rows.filter(r => r.zone === z).length;
+
+  return (
+    <div>
+      {/* Header */}
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:14 }}>
+        <div>
+          <div style={{ fontSize:18, fontWeight:700, color:"#e0e0e0", marginBottom:4 }}>
+            📊 Valuation Tracker
+          </div>
+          <div style={{ fontSize:12, color:"#444", lineHeight:1.6 }}>
+            Live prijsband per stock op basis van jouw valuation config · EPS × PE multiple
+          </div>
+        </div>
+        <button onClick={() => load(true)} disabled={refreshing} style={{
+          background: refreshing ? "#1a1a1a" : "#141414",
+          border:"1px solid #222", borderRadius:10,
+          color: refreshing ? "#555" : "#888",
+          padding:"10px 16px", fontSize:12, cursor:"pointer", minHeight:44,
+          display:"flex", alignItems:"center", gap:8,
+        }}>
+          {refreshing ? <><Spinner size={12}/> Laden…</> : "↻ Ververs"}
+        </button>
+      </div>
+
+      {/* Zone summary */}
+      {rows.length > 0 && (
+        <div style={{ display:"flex", gap:8, flexWrap:"wrap", marginBottom:16 }}>
+          {[
+            ["DEEP VALUE", "#00e5a0"], ["BUY ZONE", "#7be0c0"],
+            ["FAIR VALUE", "#f5c842"], ["PREMIUM", "#ff9966"], ["EXPENSIVE", "#ff6b6b"],
+          ].map(([z, c]) => (
+            <div key={z} style={{ background:"#070707", border:`1px solid ${c}33`,
+              borderRadius:8, padding:"6px 14px", fontSize:11 }}>
+              <span style={{ color:c, fontWeight:700 }}>{zoneCount(z)}</span>
+              <span style={{ color:"#444", marginLeft:6 }}>{z}</span>
+            </div>
+          ))}
+          {updated && (
+            <div style={{ marginLeft:"auto", fontSize:10, color:"#2a2a2a",
+              display:"flex", alignItems:"center" }}>
+              {updated.toLocaleTimeString("nl-NL", { hour:"2-digit", minute:"2-digit" })}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Sort */}
+      <div style={{ display:"flex", gap:6, marginBottom:12 }}>
+        {[["pct_base","Goedkoopste eerst"],["symbol","A-Z"],["zone","Positie in band"]].map(([id, label]) => (
+          <button key={id} onClick={() => setSortBy(id)} style={{
+            padding:"6px 12px", borderRadius:7, border:"1px solid",
+            borderColor: sortBy === id ? "#00e5a066" : "#1a1a1a",
+            background: sortBy === id ? "#00e5a011" : "#0c0c0c",
+            color: sortBy === id ? "#00e5a0" : "#444",
+            fontSize:11, cursor:"pointer",
+          }}>{label}</button>
+        ))}
+      </div>
+
+      {loading ? (
+        <div style={{ display:"flex", alignItems:"center", gap:10, color:"#333",
+          fontFamily:"monospace", padding:"40px 0" }}>
+          <Spinner/> Prijzen laden voor {rows.length || "alle"} stocks…
+        </div>
+      ) : (
+        <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+          {sorted.map(r => (
+            <div key={r.symbol} style={{
+              background:"#070707",
+              border:`1.5px solid ${r.zone === "BUY ZONE" || r.zone === "DEEP VALUE" ? r.zoneColor + "33" : "#141414"}`,
+              borderRadius:12, padding:"14px 16px",
+            }}>
+              {/* Top row */}
+              <div style={{ display:"flex", justifyContent:"space-between",
+                alignItems:"center", marginBottom:10 }}>
+                <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+                  <span style={{ fontFamily:"monospace", fontWeight:700,
+                    fontSize:17, color:"#e0e0e0" }}>{r.symbol}</span>
+                  <span style={{ fontSize:11, fontWeight:700, color:r.zoneColor,
+                    background:r.zoneColor + "18", borderRadius:5,
+                    padding:"2px 9px" }}>{r.zone}</span>
+                </div>
+                <div style={{ textAlign:"right" }}>
+                  <div style={{ fontFamily:"monospace", fontSize:20,
+                    fontWeight:700, color:"#e0e0e0" }}>
+                    ${r.price.toFixed(0)}
+                  </div>
+                  <div style={{ fontSize:10, color:r.pctBase <= 0 ? "#00e5a0" : "#ff6b6b",
+                    fontFamily:"monospace" }}>
+                    {r.pctBase > 0 ? "+" : ""}{r.pctBase}% vs fair
+                  </div>
+                </div>
+              </div>
+
+              {/* Price band bar */}
+              <div style={{ position:"relative", height:36, marginBottom:12 }}>
+                {/* Background gradient */}
+                <div style={{ position:"absolute", left:0, top:12, height:8,
+                  width:"100%", borderRadius:4,
+                  background:"linear-gradient(to right, #00e5a033, #00e5a022 30%, #f5c84222 50%, #f5c84222 65%, #ff6b6b22)" }}/>
+
+                {/* Bear label */}
+                <div style={{ position:"absolute", left:0, top:24,
+                  fontSize:8, color:"#2a2a2a", fontFamily:"monospace" }}>
+                  BEAR ${r.bearPrice}
+                </div>
+                {/* Base line */}
+                <div style={{ position:"absolute", left:"50%", top:8,
+                  width:1.5, height:16, background:"#f5c84288" }}/>
+                <div style={{ position:"absolute", left:"50%", top:24,
+                  fontSize:8, color:"#f5c842", fontFamily:"monospace",
+                  transform:"translateX(-50%)", whiteSpace:"nowrap" }}>
+                  FAIR ${r.basePrice}
+                </div>
+                {/* Bull label */}
+                <div style={{ position:"absolute", right:0, top:24,
+                  fontSize:8, color:"#2a2a2a", fontFamily:"monospace" }}>
+                  BULL ${r.bullPrice}
+                </div>
+
+                {/* Current price marker */}
+                <div style={{
+                  position:"absolute",
+                  left:`${r.barPct}%`,
+                  top:6, width:12, height:20,
+                  background:r.zoneColor,
+                  borderRadius:3,
+                  transform:"translateX(-50%)",
+                  opacity:0.9,
+                }}/>
+                {/* Price label above marker */}
+                <div style={{
+                  position:"absolute",
+                  left:`${r.barPct}%`,
+                  top:-14, fontSize:10,
+                  color:r.zoneColor,
+                  fontFamily:"monospace", fontWeight:700,
+                  transform:"translateX(-50%)",
+                  whiteSpace:"nowrap",
+                }}>
+                  ${r.price.toFixed(0)}
+                </div>
+              </div>
+
+              {/* Metrics row */}
+              <div style={{ display:"flex", gap:8, flexWrap:"wrap", marginBottom:8 }}>
+                {[
+                  { label:"EPS basis", value:r.epsLabel, color:"#555" },
+                  { label:"Bear", value:`$${r.bearPrice}`, color:"#ff6b6b" },
+                  { label:"Fair (base)", value:`$${r.basePrice}`, color:"#f5c842" },
+                  { label:"Bull", value:`$${r.bullPrice}`, color:"#00e5a0" },
+                  { label:"vs Fair", value:`${r.pctBase > 0 ? "+" : ""}${r.pctBase}%`,
+                    color:r.pctBase <= -5 ? "#00e5a0" : r.pctBase <= 5 ? "#f5c842" : "#ff6b6b" },
+                ].map(m => (
+                  <div key={m.label} style={{ background:"#0c0c0c", borderRadius:7,
+                    padding:"5px 10px", fontSize:11 }}>
+                    <span style={{ color:"#333" }}>{m.label} </span>
+                    <span style={{ fontFamily:"monospace", fontWeight:700,
+                      color:m.color }}>{m.value}</span>
+                  </div>
+                ))}
+              </div>
+
+              {/* Note snippet */}
+              {r.note && (
+                <div style={{ fontSize:10, color:"#2a2a2a", lineHeight:1.6,
+                  borderTop:"1px solid #111", paddingTop:8,
+                  overflow:"hidden", display:"-webkit-box",
+                  WebkitLineClamp:2, WebkitBoxOrient:"vertical" }}>
+                  {r.note}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+
 // ── Opportunity Scanner Tab (Rule #1 Edition) ───────────────────────────────
 function ScannerTab() {
   const [scans, setScans]         = useState([]);
@@ -3965,6 +4256,7 @@ export default function App() {
     { id: "intel",     label: "⚡ Edge Intel", icon: "chart" },
     { id: "peg",       label: "PEG Chart",  icon: "chart" },
     { id: "scanner",   label: "🎯 Scanner",  icon: "chart" },
+    { id: "tracker",   label: "📊 Tracker",   icon: "chart" },
   ];
 
   return (
@@ -4185,6 +4477,9 @@ export default function App() {
             </div>
             <div style={{ display: tab === "scanner" ? "block" : "none" }}>
               <ScannerTab/>
+            </div>
+            <div style={{ display: tab === "tracker" ? "block" : "none" }}>
+              <ValuationTrackerTab/>
             </div>
             <div style={{ display: tab === "peg" ? "block" : "none" }}>
               <PEGChartTab portfolioSymbols={positions.map(p => p.symbol)}/>
