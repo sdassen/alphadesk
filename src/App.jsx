@@ -3529,81 +3529,80 @@ function ValuationTrackerTab() {
             <tbody>
               {sorted.map((r, i) => {
                 const isExp = expanded === r.symbol;
-                return [
-                  <tr key={r.symbol}
-                    onClick={() => setExpanded(isExp ? null : r.symbol)}
-                    style={{ background: i % 2 === 0 ? "#070707" : "#060606",
-                      cursor:"pointer", transition:"background 0.15s" }}>
+                return (
+                  <React.Fragment key={r.symbol}>
+                    <tr
+                      onClick={() => setExpanded(isExp ? null : r.symbol)}
+                      style={{ background: i % 2 === 0 ? "#070707" : "#060606",
+                        cursor:"pointer" }}>
 
-                    {/* Stock */}
-                    <td style={{ ...tdStyle, fontWeight:700, color:"#e0e0e0", fontSize:14 }}>
-                      {r.symbol}
-                      <span style={{ fontSize:8, color:"#2a2a2a", marginLeft:6 }}>
-                        {isExp ? "▲" : "▼"}
-                      </span>
-                    </td>
+                      {/* Stock */}
+                      <td style={{ ...tdStyle, fontWeight:700, color:"#e0e0e0", fontSize:14 }}>
+                        {r.symbol}
+                        <span style={{ fontSize:8, color:"#2a2a2a", marginLeft:6 }}>
+                          {isExp ? "▲" : "▼"}
+                        </span>
+                      </td>
 
-                    {/* Zone badge */}
-                    <td style={tdStyle}>
-                      <span style={{ background:`${r.zc}18`, color:r.zc,
-                        borderRadius:5, padding:"2px 8px", fontSize:10, fontWeight:700 }}>
-                        {r.zone}
-                      </span>
-                    </td>
+                      {/* Zone badge */}
+                      <td style={tdStyle}>
+                        <span style={{ background:`${r.zc}18`, color:r.zc,
+                          borderRadius:5, padding:"2px 8px", fontSize:10, fontWeight:700 }}>
+                          {r.zone}
+                        </span>
+                      </td>
 
-                    {/* Prijs */}
-                    <td style={{ ...tdStyle, color:"#e0e0e0", fontWeight:700 }}>
-                      ${r.price.toFixed(0)}
-                    </td>
+                      {/* Prijs */}
+                      <td style={{ ...tdStyle, color:"#e0e0e0", fontWeight:700 }}>
+                        ${r.price.toFixed(0)}
+                      </td>
 
-                    {/* Bear */}
-                    <td style={{ ...tdStyle, color:"#ff6b6b" }}>${r.bear}</td>
+                      {/* Bear */}
+                      <td style={{ ...tdStyle, color:"#ff6b6b" }}>${r.bear}</td>
 
-                    {/* Fair */}
-                    <td style={{ ...tdStyle, color:"#f5c842", fontWeight:700 }}>${r.base}</td>
+                      {/* Fair */}
+                      <td style={{ ...tdStyle, color:"#f5c842", fontWeight:700 }}>${r.base}</td>
 
-                    {/* Bull */}
-                    <td style={{ ...tdStyle, color:"#00e5a0" }}>${r.bull}</td>
+                      {/* Bull */}
+                      <td style={{ ...tdStyle, color:"#00e5a0" }}>${r.bull}</td>
 
-                    {/* vs Fair */}
-                    <td style={{ ...tdStyle, color: r.pctBase <= -5 ? "#00e5a0" : r.pctBase <= 5 ? "#f5c842" : "#ff6b6b",
-                      fontWeight:700 }}>
-                      {r.pctBase > 0 ? "+" : ""}{r.pctBase}%
-                    </td>
+                      {/* vs Fair */}
+                      <td style={{ ...tdStyle, fontWeight:700,
+                        color: r.pctBase <= -5 ? "#00e5a0" : r.pctBase <= 5 ? "#f5c842" : "#ff6b6b" }}>
+                        {r.pctBase > 0 ? "+" : ""}{r.pctBase}%
+                      </td>
 
-                    {/* Band bar */}
-                    <td style={{ ...tdStyle, minWidth:120 }}>
-                      <div style={{ position:"relative", height:16 }}>
-                        {/* Track */}
-                        <div style={{ position:"absolute", top:5, left:0,
-                          width:"100%", height:6, borderRadius:3,
-                          background:`linear-gradient(to right, #00e5a033, #f5c84222 50%, #ff6b6b22)` }}/>
-                        {/* Fair line */}
-                        <div style={{ position:"absolute", top:3, left:"50%",
-                          width:1, height:10, background:"#f5c84266" }}/>
-                        {/* Marker */}
-                        <div style={{ position:"absolute", top:2,
-                          left:`${r.barPct}%`, transform:"translateX(-50%)",
-                          width:8, height:12, borderRadius:2, background:r.zc }}/>
-                      </div>
-                    </td>
+                      {/* Band bar */}
+                      <td style={{ ...tdStyle, minWidth:120 }}>
+                        <div style={{ position:"relative", height:16 }}>
+                          <div style={{ position:"absolute", top:5, left:0,
+                            width:"100%", height:6, borderRadius:3,
+                            background:"linear-gradient(to right, #00e5a033, #f5c84222 50%, #ff6b6b22)" }}/>
+                          <div style={{ position:"absolute", top:3, left:"50%",
+                            width:1, height:10, background:"#f5c84266" }}/>
+                          <div style={{ position:"absolute", top:2,
+                            left:`${r.barPct}%`, transform:"translateX(-50%)",
+                            width:8, height:12, borderRadius:2, background:r.zc }}/>
+                        </div>
+                      </td>
 
-                    {/* EPS */}
-                    <td style={{ ...tdStyle, color:"#555", fontSize:11 }}>
-                      {r.epsLabel}
-                    </td>
-                  </tr>,
-
-                  /* Expanded note row */
-                  isExp && (
-                    <tr key={r.symbol + "_note"} style={{ background:"#050505" }}>
-                      <td colSpan={9} style={{ padding:"10px 14px", fontSize:11,
-                        color:"#444", lineHeight:1.7, borderBottom:`1px solid #111` }}>
-                        {r.note}
+                      {/* EPS */}
+                      <td style={{ ...tdStyle, color:"#555", fontSize:11 }}>
+                        {r.epsLabel}
                       </td>
                     </tr>
-                  ),
-                ];
+
+                    {/* Expanded note */}
+                    {isExp && (
+                      <tr style={{ background:"#050505" }}>
+                        <td colSpan={9} style={{ padding:"10px 14px", fontSize:11,
+                          color:"#444", lineHeight:1.7, borderBottom:"1px solid #111" }}>
+                          {r.note}
+                        </td>
+                      </tr>
+                    )}
+                  </React.Fragment>
+                );
               })}
             </tbody>
           </table>
