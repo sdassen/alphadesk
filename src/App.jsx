@@ -3379,269 +3379,239 @@ function MarktTab() {
 
 // ── Valuation Tracker Tab ────────────────────────────────────────────────────
 function ValuationTrackerTab() {
-  const [rows, setRows]         = useState([]);
-  const [status, setStatus]     = useState("Laden...");
-  const [loading, setLoading]   = useState(true);
-  const [updated, setUpdated]   = useState(null);
-  const [sortBy, setSortBy]     = useState("pct_base");
-  const [expanded, setExpanded] = useState(null);
+  const [rows, setRows]     = useState(null); // null=not loaded, []=loaded empty
+  const [loading, setLoad]  = useState(false);
+  const [updated, setUpd]   = useState(null);
+  const [sortBy, setSort]   = useState("pct_base");
+  const [expanded, setExp]  = useState(null);
 
   const load = async () => {
-    setLoading(true);
-    setStatus("Configs laden...");
+    setLoad(true);
+    try {
+      const { data: cfgs } = await SB
+        .from("valuation_config")
+        .select("symbol,eps_basis,pe_bear_abs,pe_base_abs,pe_bull_abs,note")
+        .neq("symbol", "DEFAULT")
+        .not("pe_base_abs", "is", null);
 
-    // Step 1: configs from DB
-    const { data: cfgs } = await SB
-      .from("valuation_config")
-      .select("symbol,eps_basis,pe_bear_abs,pe_base_abs,pe_bull_abs,note")
-      .neq("symbol", "DEFAULT")
-      .not("pe_base_abs", "is", null);
+      if (!cfgs?.length) { setRows([]); setLoad(false); return; }
 
-    if (!cfgs?.length) { setStatus("Geen configs gevonden"); setLoading(false); return; }
-    setStatus(`Prijzen ophalen voor ${cfgs.length} stocks...`);
+      const out = [];
+      for (const cfg of cfgs) {
+        try {
+          // Use fetchFull for price (proven stable)
+          const full = await fetchFull(cfg.symbol);
+          if (!full?.price) continue;
 
-    // Step 2: fetch prices using existing fetchFull (proven to work in ValuationTab)
-    const results = [];
-    for (const cfg of cfgs) {
-      try {
-        // Fetch price + EPS in parallel using proven functions
-        const [full, sumRaw] = await Promise.all([
-          fetchFull(cfg.symbol),
-          yahooSummary(cfg.symbol),
-        ]);
-        if (!full || !full.price) { console.log(`No price for ${cfg.symbol}`); continue; }
-        const price  = full.price;
-        const fin2   = sumRaw?.quoteSummary?.result?.[0];
-        const ks2    = fin2?.defaultKeyStatistics ?? {};
-        const fwdEPS = ks2.forwardEps?.raw  ?? null;
-        const trlEPS = ks2.trailingEps?.raw ?? null;
+          // Get EPS from summary (fetchFull doesn't expose raw EPS)
+          const sum = await yahooSummary(cfg.symbol);
+          const ks  = sum?.quoteSummary?.result?.[0]?.defaultKeyStatistics ?? {};
+          const fwd = ks.forwardEps?.raw  ?? null;
+          const trl = ks.trailingEps?.raw ?? null;
 
-        // Choose EPS per config
-        const distorted = fwdEPS && trlEPS && trlEPS > 0 && fwdEPS > trlEPS * 4;
-        let baseEPS, epsLabel;
-        if (cfg.eps_basis === "forward" && fwdEPS && fwdEPS > 0 && !distorted) {
-          baseEPS = fwdEPS; epsLabel = `fwd $${fwdEPS.toFixed(2)}`;
-        } else if (trlEPS && trlEPS > 0) {
-          baseEPS = trlEPS; epsLabel = `trl $${trlEPS.toFixed(2)}`;
-        } else {
-          console.log(`No EPS for ${cfg.symbol}`); continue;
-        }
+          let base, lbl;
+          const dist = fwd && trl && trl > 0 && fwd > trl * 4;
+          if (cfg.eps_basis === "forward" && fwd && fwd > 0 && !dist) {
+            base = fwd; lbl = "fwd $" + fwd.toFixed(2);
+          } else if (trl && trl > 0) {
+            base = trl; lbl = "trl $" + trl.toFixed(2);
+          } else continue;
 
-        const bearPE = Number(cfg.pe_bear_abs);
-        const basePE = Number(cfg.pe_base_abs);
-        const bullPE = Number(cfg.pe_bull_abs);
+          const bPE = Number(cfg.pe_bear_abs);
+          const fPE = Number(cfg.pe_base_abs);
+          const uPE = Number(cfg.pe_bull_abs);
+          const bP  = Math.round(base * bPE);
+          const fP  = Math.round(base * fPE);
+          const uP  = Math.round(base * uPE);
+          const pct = Math.round(((full.price - fP) / fP) * 100);
+          const rng = uP - bP;
+          const bar = rng > 0 ? Math.min(96, Math.max(4, ((full.price - bP) / rng) * 100)) : 50;
 
-        const bearP = Math.round(baseEPS * bearPE);
-        const baseP = Math.round(baseEPS * basePE);
-        const bullP = Math.round(baseEPS * bullPE);
+          let zone, zc;
+          if      (full.price <= bP)        { zone="DEEP VALUE"; zc="#00e5a0"; }
+          else if (full.price <= fP * 0.95) { zone="BUY ZONE";  zc="#7be0c0"; }
+          else if (full.price <= fP * 1.05) { zone="FAIR";      zc="#f5c842"; }
+          else if (full.price <= uP)        { zone="PREMIUM";   zc="#ff9966"; }
+          else                              { zone="EXPENSIVE"; zc="#ff6b6b"; }
 
-        const pctBase = Math.round(((price - baseP) / baseP) * 100);
-        const range   = bullP - bearP;
-        const barPct  = range > 0
-          ? Math.min(96, Math.max(4, ((price - bearP) / range) * 100))
-          : 50;
+          out.push({
+            sym: cfg.symbol,
+            price: full.price,
+            chg:   full.change ?? 0,
+            lbl, bPE, fPE, uPE, bP, fP, uP, pct, bar, zone, zc,
+            note: cfg.note ?? "",
+          });
+        } catch(_) { /* skip failed symbol */ }
+        await new Promise(r => setTimeout(r, 100));
+      }
 
-        let zone, zc;
-        if      (price <= bearP)        { zone="DEEP VALUE"; zc="#00e5a0"; }
-        else if (price <= baseP * 0.95) { zone="BUY ZONE";  zc="#7be0c0"; }
-        else if (price <= baseP * 1.05) { zone="FAIR";      zc="#f5c842"; }
-        else if (price <= bullP)        { zone="PREMIUM";   zc="#ff9966"; }
-        else                            { zone="EXPENSIVE"; zc="#ff6b6b"; }
-
-        results.push({
-          symbol:cfg.symbol, price, baseEPS, epsLabel,
-          bearPE, basePE, bullPE, bearP, baseP, bullP,
-          pctBase, barPct, zone, zc,
-          change: full.change ?? 0,
-          note: cfg.note ?? "",
-        });
-        setStatus(`Geladen: ${results.length}/${cfgs.length}`);
-      } catch(e) { console.warn(`Skip ${cfg.symbol}:`, e); }
-      await new Promise(r => setTimeout(r, 120));
+      setRows(out);
+      setUpd(new Date());
+    } catch(e) {
+      console.error("Tracker load error:", e);
+      setRows([]);
     }
-
-    setRows(results);
-    setUpdated(new Date());
-    setStatus(`${results.length} stocks geladen`);
-    setLoading(false);
+    setLoad(false);
   };
 
   useEffect(() => { load(); }, []);
 
-  const sorted = [...rows].sort((a, b) =>
-    sortBy === "symbol"   ? a.symbol.localeCompare(b.symbol) :
-    sortBy === "zone"     ? a.barPct - b.barPct :
-    a.pctBase - b.pctBase
+  if (rows === null && !loading) {
+    return (
+      <div style={{ textAlign:"center", padding:"60px 0", color:"#444", fontFamily:"monospace" }}>
+        <button onClick={load} style={{ background:"#00e5a0", border:"none", borderRadius:8,
+          color:"#000", padding:"12px 24px", fontSize:14, fontWeight:700, cursor:"pointer" }}>
+          Laad Valuation Tracker
+        </button>
+      </div>
+    );
+  }
+
+  if (loading) {
+    return (
+      <div>
+        <div style={{ fontSize:18, fontWeight:700, color:"#e0e0e0", marginBottom:8 }}>📊 Valuation Tracker</div>
+        <div style={{ display:"flex", alignItems:"center", gap:10, color:"#555", fontFamily:"monospace", padding:"40px 0" }}>
+          <Spinner/> Prijzen ophalen per stock… even geduld
+        </div>
+      </div>
+    );
+  }
+
+  const sorted = [...(rows ?? [])].sort((a, b) =>
+    sortBy === "symbol" ? a.sym.localeCompare(b.sym) :
+    sortBy === "zone"   ? a.bar - b.bar :
+    a.pct - b.pct
   );
 
-  const thS = {
-    padding:"9px 12px", textAlign:"left", fontSize:10, color:"#444",
+  const thS = { padding:"8px 12px", textAlign:"left", fontSize:10, color:"#444",
     fontWeight:700, textTransform:"uppercase", letterSpacing:0.8,
-    borderBottom:"1px solid #111", whiteSpace:"nowrap",
-  };
-  const tdS = {
-    padding:"10px 12px", borderBottom:"1px solid #0d0d0d",
-    fontFamily:"monospace", fontSize:13, whiteSpace:"nowrap",
-  };
+    borderBottom:"1px solid #111", whiteSpace:"nowrap" };
+  const tdS = { padding:"10px 12px", borderBottom:"1px solid #0d0d0d",
+    fontFamily:"monospace", fontSize:13, whiteSpace:"nowrap" };
 
   return (
     <div>
       {/* Header */}
       <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:14 }}>
         <div>
-          <div style={{ fontSize:18, fontWeight:700, color:"#e0e0e0", marginBottom:3 }}>
-            📊 Valuation Tracker
-          </div>
+          <div style={{ fontSize:18, fontWeight:700, color:"#e0e0e0", marginBottom:3 }}>📊 Valuation Tracker</div>
           <div style={{ fontSize:11, color:"#444" }}>
-            {status}
-            {updated && !loading && <span style={{ color:"#2a2a2a", marginLeft:10 }}>
-              · {updated.toLocaleTimeString("nl-NL",{hour:"2-digit",minute:"2-digit"})}
+            {sorted.length} stocks · EPS × PE bands uit valuation config
+            {updated && <span style={{ color:"#2a2a2a", marginLeft:8 }}>
+              · bijgewerkt {updated.toLocaleTimeString("nl-NL",{hour:"2-digit",minute:"2-digit"})}
             </span>}
           </div>
         </div>
         <button onClick={load} disabled={loading} style={{
-          background:"#0c0c0c", border:"1px solid #1a1a1a", borderRadius:9,
-          color: loading ? "#444" : "#888", padding:"9px 16px", fontSize:12,
-          cursor: loading ? "default" : "pointer",
+          background:"#0c0c0c", border:"1px solid #1a1a1a", borderRadius:8,
+          color:"#888", padding:"9px 16px", fontSize:12, cursor:"pointer",
           display:"flex", alignItems:"center", gap:8, minHeight:40,
-        }}>
-          {loading ? <><Spinner size={12}/> Laden…</> : "↻ Ververs"}
-        </button>
+        }}>↻ Ververs</button>
       </div>
 
       {/* Zone pills */}
-      {rows.length > 0 && (
-        <div style={{ display:"flex", gap:6, flexWrap:"wrap", marginBottom:14 }}>
-          {[["DEEP VALUE","#00e5a0"],["BUY ZONE","#7be0c0"],["FAIR","#f5c842"],["PREMIUM","#ff9966"],["EXPENSIVE","#ff6b6b"]].map(([z,c]) => {
-            const n = rows.filter(r => r.zone === z).length;
-            return n > 0 ? (
-              <div key={z} style={{ background:`${c}18`, border:`1px solid ${c}44`,
-                borderRadius:6, padding:"3px 12px", fontSize:10, color:c, fontWeight:700 }}>
-                {n}× {z}
-              </div>
-            ) : null;
-          })}
-        </div>
-      )}
+      <div style={{ display:"flex", gap:6, flexWrap:"wrap", marginBottom:12 }}>
+        {[["DEEP VALUE","#00e5a0"],["BUY ZONE","#7be0c0"],["FAIR","#f5c842"],["PREMIUM","#ff9966"],["EXPENSIVE","#ff6b6b"]].map(([z,c]) => {
+          const n = sorted.filter(r => r.zone === z).length;
+          return n > 0 ? (
+            <div key={z} style={{ background:`${c}18`, border:`1px solid ${c}44`,
+              borderRadius:6, padding:"3px 12px", fontSize:10, color:c, fontWeight:700 }}>
+              {n}× {z}
+            </div>
+          ) : null;
+        })}
+      </div>
 
       {/* Sort */}
       <div style={{ display:"flex", gap:6, marginBottom:14 }}>
-        {[["pct_base","Goedkoopste eerst"],["symbol","A–Z"],["zone","Band positie"]].map(([id,lbl]) => (
-          <button key={id} onClick={() => setSortBy(id)} style={{
+        {[["pct_base","Goedkoopste eerst"],["symbol","A–Z"],["zone","Bandpositie"]].map(([id,lbl]) => (
+          <button key={id} onClick={() => setSort(id)} style={{
             padding:"5px 12px", borderRadius:6, border:"1px solid",
             borderColor: sortBy===id ? "#00e5a066" : "#1a1a1a",
             background: sortBy===id ? "#00e5a011" : "#0c0c0c",
-            color: sortBy===id ? "#00e5a0" : "#444",
-            fontSize:11, cursor:"pointer",
+            color: sortBy===id ? "#00e5a0" : "#444", fontSize:11, cursor:"pointer",
           }}>{lbl}</button>
         ))}
       </div>
 
-      {loading ? (
-        <div style={{ display:"flex", alignItems:"center", gap:10, color:"#333",
-          fontFamily:"monospace", padding:"30px 0" }}>
-          <Spinner/> {status}
-        </div>
-      ) : sorted.length === 0 ? (
+      {sorted.length === 0 ? (
         <div style={{ color:"#555", padding:"30px 0", textAlign:"center", fontSize:13 }}>
-          Geen data beschikbaar — probeer te verversen
+          Geen data — klik Ververs na marktopening
         </div>
       ) : (
         <div style={{ overflowX:"auto", borderRadius:10, border:"1px solid #111" }}>
           <table style={{ width:"100%", borderCollapse:"collapse", background:"#070707" }}>
             <thead>
               <tr style={{ background:"#0a0a0a" }}>
-                <th style={thS} onClick={() => setSortBy("symbol")} title="Sorteer A-Z">Stock</th>
+                <th style={thS}>Stock</th>
                 <th style={thS}>Zone</th>
                 <th style={thS}>Prijs</th>
-                <th style={{ ...thS, color:"#ff6b6b55" }}>Bear</th>
+                <th style={{ ...thS, color:"#ff6b6b88" }}>Bear</th>
                 <th style={{ ...thS, color:"#f5c842" }}>Fair ★</th>
-                <th style={{ ...thS, color:"#00e5a055" }}>Bull</th>
-                <th style={thS} onClick={() => setSortBy("pct_base")} title="Sorteer goedkoopste eerst">vs Fair {sortBy==="pct_base"?"↑":""}</th>
-                <th style={{ ...thS, minWidth:150 }} onClick={() => setSortBy("zone")}>Band</th>
+                <th style={{ ...thS, color:"#00e5a088" }}>Bull</th>
+                <th style={thS}>vs Fair</th>
+                <th style={{ ...thS, minWidth:140 }}>Band</th>
                 <th style={thS}>EPS</th>
               </tr>
             </thead>
             <tbody>
               {sorted.map((r, i) => {
-                const isExp = expanded === r.symbol;
+                const exp = expanded === r.sym;
                 return (
-                  <React.Fragment key={r.symbol}>
-                    <tr onClick={() => setExpanded(isExp ? null : r.symbol)}
-                      style={{ background: isExp ? "#0b0b0b" : i%2===0 ? "#070707" : "#060606", cursor:"pointer" }}>
+                  <React.Fragment key={r.sym}>
+                    <tr onClick={() => setExp(exp ? null : r.sym)}
+                      style={{ background: exp ? "#0b0b0b" : i%2===0 ? "#070707" : "#060606", cursor:"pointer" }}>
 
-                      {/* Symbol */}
                       <td style={{ ...tdS, fontWeight:700, color:"#e0e0e0", fontSize:15 }}>
-                        {r.symbol}
-                        <span style={{ fontSize:8, color:"#333", marginLeft:5 }}>
-                          {isExp ? "▲" : "▼"}
-                        </span>
+                        {r.sym} <span style={{ fontSize:8, color:"#333" }}>{exp?"▲":"▼"}</span>
                       </td>
 
-                      {/* Zone */}
                       <td style={tdS}>
                         <span style={{ background:`${r.zc}18`, color:r.zc, borderRadius:5,
-                          padding:"2px 9px", fontSize:10, fontWeight:700 }}>
-                          {r.zone}
-                        </span>
+                          padding:"2px 9px", fontSize:10, fontWeight:700 }}>{r.zone}</span>
                       </td>
 
-                      {/* Prijs + dagverandering */}
                       <td style={{ ...tdS, color:"#e0e0e0", fontWeight:700 }}>
                         ${r.price.toLocaleString("en-US", {maximumFractionDigits:0})}
-                        {r.change !== 0 && (
-                          <span style={{ fontSize:10, marginLeft:6,
-                            color: r.change >= 0 ? "#00e5a0" : "#ff6b6b" }}>
-                            {r.change >= 0 ? "+" : ""}{r.change.toFixed(1)}%
+                        {r.chg !== 0 && (
+                          <span style={{ fontSize:10, marginLeft:6, color: r.chg>=0 ? "#00e5a0" : "#ff6b6b" }}>
+                            {r.chg>=0?"+":""}{r.chg.toFixed(1)}%
                           </span>
                         )}
                       </td>
 
-                      {/* Bear */}
                       <td style={{ ...tdS, color:"#ff6b6b" }}>
-                        ${r.bearP.toLocaleString("en-US")}
-                        <span style={{ fontSize:9, color:"#333", marginLeft:4 }}>{r.bearPE}×</span>
+                        ${r.bP.toLocaleString("en-US")} <span style={{ fontSize:9, color:"#333" }}>{r.bPE}×</span>
                       </td>
 
-                      {/* Fair */}
                       <td style={{ ...tdS, color:"#f5c842", fontWeight:700 }}>
-                        ${r.baseP.toLocaleString("en-US")}
-                        <span style={{ fontSize:9, color:"#555", marginLeft:4 }}>{r.basePE}×</span>
+                        ${r.fP.toLocaleString("en-US")} <span style={{ fontSize:9, color:"#555" }}>{r.fPE}×</span>
                       </td>
 
-                      {/* Bull */}
                       <td style={{ ...tdS, color:"#00e5a0" }}>
-                        ${r.bullP.toLocaleString("en-US")}
-                        <span style={{ fontSize:9, color:"#333", marginLeft:4 }}>{r.bullPE}×</span>
+                        ${r.uP.toLocaleString("en-US")} <span style={{ fontSize:9, color:"#333" }}>{r.uPE}×</span>
                       </td>
 
-                      {/* vs Fair */}
                       <td style={{ ...tdS, fontWeight:700,
-                        color: r.pctBase<=-10 ? "#00e5a0" : r.pctBase<=5 ? "#f5c842" : r.pctBase<=25 ? "#ff9966" : "#ff6b6b" }}>
-                        {r.pctBase>0?"+":""}{r.pctBase}%
+                        color: r.pct<=-10?"#00e5a0":r.pct<=5?"#f5c842":r.pct<=25?"#ff9966":"#ff6b6b" }}>
+                        {r.pct>0?"+":""}{r.pct}%
                       </td>
 
-                      {/* Band bar */}
-                      <td style={{ ...tdS, minWidth:150 }}>
+                      <td style={{ ...tdS, minWidth:140 }}>
                         <div style={{ position:"relative", height:20 }}>
-                          <div style={{ position:"absolute", top:7, left:0, width:"100%",
-                            height:6, borderRadius:3,
-                            background:"linear-gradient(to right,#00e5a044,#f5c84222 50%,#ff6b6b33)" }}/>
-                          <div style={{ position:"absolute", top:5, left:"50%",
-                            width:1.5, height:10, background:"#f5c842aa" }}/>
-                          <div style={{ position:"absolute", top:4, left:`${r.barPct}%`,
-                            transform:"translateX(-50%)", width:12, height:12,
-                            borderRadius:3, background:r.zc }}/>
+                          <div style={{ position:"absolute", top:7, left:0, width:"100%", height:6,
+                            borderRadius:3, background:"linear-gradient(to right,#00e5a044,#f5c84222 50%,#ff6b6b33)" }}/>
+                          <div style={{ position:"absolute", top:5, left:"50%", width:1.5, height:10, background:"#f5c842aa" }}/>
+                          <div style={{ position:"absolute", top:4, left:`${r.bar}%`, transform:"translateX(-50%)",
+                            width:12, height:12, borderRadius:3, background:r.zc }}/>
                         </div>
                       </td>
 
-                      {/* EPS */}
-                      <td style={{ ...tdS, color:"#444", fontSize:11 }}>
-                        {r.epsLabel}
-                      </td>
+                      <td style={{ ...tdS, color:"#444", fontSize:11 }}>{r.lbl}</td>
                     </tr>
 
-                    {isExp && (
+                    {exp && (
                       <tr style={{ background:"#050505" }}>
                         <td colSpan={9} style={{ padding:"12px 16px", fontSize:11,
                           color:"#555", lineHeight:1.75, borderBottom:"1px solid #0d0d0d" }}>
