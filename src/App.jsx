@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from "react";
+import React, { useState, useEffect, useCallback, useMemo } from "react";
 import { createClient } from "@supabase/supabase-js";
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip,
@@ -3379,68 +3379,45 @@ function MarktTab() {
 
 // ── Valuation Tracker Tab ────────────────────────────────────────────────────
 function ValuationTrackerTab() {
-  const [data, setData]   = useState([]);
-  const [loading, setLd]  = useState(true);
-  const [sortBy, setSort] = useState("vs");
-  const [expanded, setExp]= useState(null);
+  const [rows, setRows] = useState([]);
+  const [done, setDone] = useState(false);
 
   useEffect(() => {
     (async () => {
       try {
-        // Load valuation configs
         const { data: cfgs } = await SB
           .from("valuation_config")
           .select("symbol,eps_basis,pe_bear_abs,pe_base_abs,pe_bull_abs,note")
           .neq("symbol", "DEFAULT")
           .not("pe_base_abs", "is", null);
-
-        // Load latest prices from opportunity_scans (already fetched by scanner)
-        const { data: scans } = await SB
-          .from("opportunity_scans")
-          .select("symbol,price,peg")
-          .order("scanned_at", { ascending: false })
-          .limit(500);
-
-        // Build price map from latest scan per symbol
-        const priceMap = {};
-        for (const s of (scans || [])) {
-          if (!priceMap[s.symbol] && s.price) priceMap[s.symbol] = s.price;
-        }
-
-        // Build rows
-        const rows = [];
-        for (const cfg of (cfgs || [])) {
-          const price = priceMap[cfg.symbol];
-          if (!price) continue;
-
-          const bPE = Number(cfg.pe_bear_abs);
-          const fPE = Number(cfg.pe_base_abs);
-          const uPE = Number(cfg.pe_bull_abs);
-
-          // We don't have EPS directly — compute from price and PE if possible
-          // Instead: show the PE bands relative to current price
-          // vs Fair = how far price is from our "base" valuation
-          // We need EPS — get it from peg_history or use price/PE ratio
-          // Simple fallback: show the configured PE multiples with current price context
-          const impliedEPS = price / fPE; // reverse-engineered from current price
-          const bP = Math.round(impliedEPS * bPE);
-          const fP = Math.round(impliedEPS * fPE); // = price (by definition)
-          const uP = Math.round(impliedEPS * uPE);
-
-          rows.push({
-            sym: cfg.symbol, price,
-            bPE, fPE, uPE, bP, fP, uP,
-            vs: 0, // price IS fair by this method
-            note: cfg.note || "",
-          });
-        }
-        setData(rows);
+        setRows(cfgs || []);
       } catch(e) { console.error(e); }
-      setLd(false);
+      setDone(true);
     })();
   }, []);
 
-  return <div style={{color:"#e0e0e0"}}>test: {data.length} rows loaded</div>;
+  if (!done) return <div style={{color:"#888",padding:20}}>Laden...</div>;
+
+  return (
+    <div style={{color:"#e0e0e0", padding:20}}>
+      <div style={{fontSize:18, fontWeight:700, marginBottom:12}}>📊 Valuation Tracker</div>
+      <div style={{fontSize:12, color:"#555", marginBottom:16}}>{rows.length} stocks in valuation config</div>
+      <div style={{fontFamily:"monospace", fontSize:12}}>
+        {rows.map(r => (
+          <div key={r.symbol} style={{
+            display:"flex", gap:16, padding:"8px 0",
+            borderBottom:"1px solid #111", alignItems:"center"
+          }}>
+            <span style={{fontWeight:700, minWidth:60}}>{r.symbol}</span>
+            <span style={{color:"#ff6b6b", minWidth:60}}>Bear {r.pe_bear_abs}×</span>
+            <span style={{color:"#f5c842", fontWeight:700, minWidth:60}}>Fair {r.pe_base_abs}×</span>
+            <span style={{color:"#00e5a0", minWidth:60}}>Bull {r.pe_bull_abs}×</span>
+            <span style={{color:"#444", fontSize:10}}>{r.eps_basis}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
 }
 
 
