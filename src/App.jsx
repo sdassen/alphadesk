@@ -3379,43 +3379,238 @@ function MarktTab() {
 
 // ── Valuation Tracker Tab ────────────────────────────────────────────────────
 function ValuationTrackerTab() {
-  const [rows, setRows] = useState([]);
-  const [done, setDone] = useState(false);
+  const [rows, setRows]   = useState([]);
+  const [done, setDone]   = useState(false);
+  const [sortBy, setSort] = useState("vs");
+  const [expanded, setExp]= useState(null);
 
   useEffect(() => {
     (async () => {
       try {
+        // 1. Load configs
         const { data: cfgs } = await SB
           .from("valuation_config")
           .select("symbol,eps_basis,pe_bear_abs,pe_base_abs,pe_bull_abs,note")
           .neq("symbol", "DEFAULT")
           .not("pe_base_abs", "is", null);
-        setRows(cfgs || []);
+        if (!cfgs?.length) { setDone(true); return; }
+
+        // 2. Fetch price + EPS for each stock
+        const out = [];
+        for (const cfg of cfgs) {
+          try {
+            // fetchQuote gets price from chart API (proven stable)
+            const q = await fetchQuote(cfg.symbol);
+            if (!q || !q.price) continue;
+
+            // Get EPS via summary
+            const s   = await yahooSummary(cfg.symbol);
+            const ks  = s?.quoteSummary?.result?.[0]?.defaultKeyStatistics ?? {};
+            const fwd = typeof ks.forwardEps?.raw === "number" ? ks.forwardEps.raw : null;
+            const trl = typeof ks.trailingEps?.raw === "number" ? ks.trailingEps.raw : null;
+
+            // Pick EPS per config
+            let eps = null;
+            let epsLbl = "—";
+            const dist = fwd && trl && trl > 0 && fwd > trl * 4;
+            if (cfg.eps_basis === "forward" && fwd && fwd > 0 && !dist) {
+              eps = fwd; epsLbl = "fwd $" + fwd.toFixed(2);
+            } else if (trl && trl > 0) {
+              eps = trl; epsLbl = "trl $" + trl.toFixed(2);
+            }
+            if (!eps || eps <= 0) continue;
+
+            const bPE = Number(cfg.pe_bear_abs);
+            const fPE = Number(cfg.pe_base_abs);
+            const uPE = Number(cfg.pe_bull_abs);
+            const bP  = Math.round(eps * bPE);
+            const fP  = Math.round(eps * fPE);
+            const uP  = Math.round(eps * uPE);
+            const px  = q.price;
+            const vs  = fP > 0 ? Math.round(((px - fP) / fP) * 100) : 0;
+            const rng = uP - bP;
+            const bar = rng > 0 ? Math.min(96, Math.max(4, ((px - bP) / rng) * 100)) : 50;
+            const chg = typeof q.change === "number" ? q.change : 0;
+
+            let zone, zc;
+            if      (px <= bP)        { zone = "DEEP VALUE"; zc = "#00e5a0"; }
+            else if (px <= fP * 0.95) { zone = "BUY ZONE";  zc = "#7be0c0"; }
+            else if (px <= fP * 1.05) { zone = "FAIR";      zc = "#f5c842"; }
+            else if (px <= uP)        { zone = "PREMIUM";   zc = "#ff9966"; }
+            else                      { zone = "EXPENSIVE"; zc = "#ff6b6b"; }
+
+            out.push({ sym: cfg.symbol, px, chg, eps, epsLbl,
+              bPE, fPE, uPE, bP, fP, uP, vs, bar, zone, zc,
+              note: cfg.note || "" });
+          } catch(_) {}
+          await new Promise(r => setTimeout(r, 150));
+        }
+        setRows(out);
       } catch(e) { console.error(e); }
       setDone(true);
     })();
   }, []);
 
-  if (!done) return <div style={{color:"#888",padding:20}}>Laden...</div>;
+  const reload = () => { setDone(false); setRows([]); };
+
+  if (!done) return (
+    <div style={{padding:20}}>
+      <div style={{fontSize:18, fontWeight:700, color:"#e0e0e0", marginBottom:12}}>📊 Valuation Tracker</div>
+      <div style={{display:"flex", alignItems:"center", gap:10, color:"#555", fontFamily:"monospace"}}>
+        <Spinner/> Prijzen ophalen...
+      </div>
+    </div>
+  );
+
+  const sorted = [...rows].sort((a,b) =>
+    sortBy === "sym" ? a.sym.localeCompare(b.sym) :
+    sortBy === "bar" ? a.bar - b.bar : a.vs - b.vs
+  );
+
+  const th = { padding:"8px 12px", textAlign:"left", fontSize:10, color:"#444",
+    fontWeight:700, textTransform:"uppercase", letterSpacing:0.8,
+    borderBottom:"1px solid #111", whiteSpace:"nowrap" };
+  const td = { padding:"10px 12px", borderBottom:"1px solid #0d0d0d",
+    fontFamily:"monospace", fontSize:13, whiteSpace:"nowrap" };
 
   return (
-    <div style={{color:"#e0e0e0", padding:20}}>
-      <div style={{fontSize:18, fontWeight:700, marginBottom:12}}>📊 Valuation Tracker</div>
-      <div style={{fontSize:12, color:"#555", marginBottom:16}}>{rows.length} stocks in valuation config</div>
-      <div style={{fontFamily:"monospace", fontSize:12}}>
-        {rows.map(r => (
-          <div key={r.symbol} style={{
-            display:"flex", gap:16, padding:"8px 0",
-            borderBottom:"1px solid #111", alignItems:"center"
-          }}>
-            <span style={{fontWeight:700, minWidth:60}}>{r.symbol}</span>
-            <span style={{color:"#ff6b6b", minWidth:60}}>Bear {r.pe_bear_abs}×</span>
-            <span style={{color:"#f5c842", fontWeight:700, minWidth:60}}>Fair {r.pe_base_abs}×</span>
-            <span style={{color:"#00e5a0", minWidth:60}}>Bull {r.pe_bull_abs}×</span>
-            <span style={{color:"#444", fontSize:10}}>{r.eps_basis}</span>
-          </div>
+    <div>
+      <div style={{display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:12}}>
+        <div>
+          <div style={{fontSize:18, fontWeight:700, color:"#e0e0e0", marginBottom:3}}>📊 Valuation Tracker</div>
+          <div style={{fontSize:11, color:"#444"}}>{sorted.length} stocks · EPS × PE bands · klik rij voor toelichting</div>
+        </div>
+        <button onClick={reload} style={{background:"#0c0c0c", border:"1px solid #1a1a1a",
+          borderRadius:8, color:"#888", padding:"9px 16px", fontSize:12, cursor:"pointer"}}>
+          ↻ Ververs
+        </button>
+      </div>
+
+      {/* Zone pills */}
+      <div style={{display:"flex", gap:6, flexWrap:"wrap", marginBottom:12}}>
+        {[["DEEP VALUE","#00e5a0"],["BUY ZONE","#7be0c0"],["FAIR","#f5c842"],
+          ["PREMIUM","#ff9966"],["EXPENSIVE","#ff6b6b"]].map(([z,c]) => {
+          const n = rows.filter(r => r.zone === z).length;
+          return n > 0 ? (
+            <div key={z} style={{background:`${c}18`, border:`1px solid ${c}44`,
+              borderRadius:6, padding:"3px 12px", fontSize:10, color:c, fontWeight:700}}>
+              {n}× {z}
+            </div>
+          ) : null;
+        })}
+      </div>
+
+      {/* Sort */}
+      <div style={{display:"flex", gap:6, marginBottom:14}}>
+        {[["vs","Goedkoopste eerst"],["sym","A–Z"],["bar","Bandpositie"]].map(([id,lbl]) => (
+          <button key={id} onClick={() => setSort(id)} style={{
+            padding:"5px 12px", borderRadius:6, border:"1px solid",
+            borderColor: sortBy===id ? "#00e5a066" : "#1a1a1a",
+            background: sortBy===id ? "#00e5a011" : "#0c0c0c",
+            color: sortBy===id ? "#00e5a0" : "#444", fontSize:11, cursor:"pointer"}}>
+            {lbl}
+          </button>
         ))}
       </div>
+
+      {sorted.length === 0 ? (
+        <div style={{color:"#555", padding:"30px 0", textAlign:"center"}}>
+          Geen data — markt mogelijk gesloten. Probeer maandag.
+        </div>
+      ) : (
+        <div style={{overflowX:"auto", borderRadius:10, border:"1px solid #111"}}>
+          <table style={{width:"100%", borderCollapse:"collapse", background:"#070707"}}>
+            <thead>
+              <tr style={{background:"#0a0a0a"}}>
+                <th style={th}>Stock</th>
+                <th style={th}>Zone</th>
+                <th style={th}>Prijs</th>
+                <th style={{...th, color:"#ff6b6b88"}}>Bear</th>
+                <th style={{...th, color:"#f5c842"}}>Fair ★</th>
+                <th style={{...th, color:"#00e5a088"}}>Bull</th>
+                <th style={th}>vs Fair</th>
+                <th style={{...th, minWidth:130}}>Band</th>
+                <th style={th}>EPS</th>
+              </tr>
+            </thead>
+            <tbody>
+              {sorted.map((r, i) => {
+                const exp = expanded === r.sym;
+                return (
+                  <React.Fragment key={r.sym}>
+                    <tr onClick={() => setExp(exp ? null : r.sym)}
+                      style={{background: exp ? "#0b0b0b" : i%2===0 ? "#070707" : "#060606",
+                        cursor:"pointer"}}>
+
+                      <td style={{...td, fontWeight:700, color:"#e0e0e0", fontSize:15}}>
+                        {r.sym} <span style={{fontSize:8, color:"#333"}}>{exp?"▲":"▼"}</span>
+                      </td>
+
+                      <td style={td}>
+                        <span style={{background:`${r.zc}18`, color:r.zc,
+                          borderRadius:5, padding:"2px 9px", fontSize:10, fontWeight:700}}>
+                          {r.zone}
+                        </span>
+                      </td>
+
+                      <td style={{...td, color:"#e0e0e0", fontWeight:700}}>
+                        ${Math.round(r.px).toLocaleString("en-US")}
+                        {r.chg !== 0 && (
+                          <span style={{fontSize:10, marginLeft:6,
+                            color: r.chg >= 0 ? "#00e5a0" : "#ff6b6b"}}>
+                            {r.chg >= 0 ? "+" : ""}{r.chg.toFixed(1)}%
+                          </span>
+                        )}
+                      </td>
+
+                      <td style={{...td, color:"#ff6b6b"}}>
+                        ${r.bP.toLocaleString("en-US")} <span style={{fontSize:9,color:"#333"}}>{r.bPE}×</span>
+                      </td>
+
+                      <td style={{...td, color:"#f5c842", fontWeight:700}}>
+                        ${r.fP.toLocaleString("en-US")} <span style={{fontSize:9,color:"#555"}}>{r.fPE}×</span>
+                      </td>
+
+                      <td style={{...td, color:"#00e5a0"}}>
+                        ${r.uP.toLocaleString("en-US")} <span style={{fontSize:9,color:"#333"}}>{r.uPE}×</span>
+                      </td>
+
+                      <td style={{...td, fontWeight:700,
+                        color: r.vs<=-10?"#00e5a0":r.vs<=5?"#f5c842":r.vs<=25?"#ff9966":"#ff6b6b"}}>
+                        {r.vs > 0 ? "+" : ""}{r.vs}%
+                      </td>
+
+                      <td style={{...td, minWidth:130}}>
+                        <div style={{position:"relative", height:20}}>
+                          <div style={{position:"absolute", top:7, left:0, width:"100%",
+                            height:6, borderRadius:3,
+                            background:"linear-gradient(to right,#00e5a044,#f5c84222 50%,#ff6b6b33)"}}/>
+                          <div style={{position:"absolute", top:5, left:"50%",
+                            width:1.5, height:10, background:"#f5c842aa"}}/>
+                          <div style={{position:"absolute", top:4,
+                            left:`${r.bar}%`, transform:"translateX(-50%)",
+                            width:12, height:12, borderRadius:3, background:r.zc}}/>
+                        </div>
+                      </td>
+
+                      <td style={{...td, color:"#444", fontSize:11}}>{r.epsLbl}</td>
+                    </tr>
+
+                    {exp && (
+                      <tr style={{background:"#050505"}}>
+                        <td colSpan={9} style={{padding:"12px 16px", fontSize:11,
+                          color:"#555", lineHeight:1.75, borderBottom:"1px solid #0d0d0d"}}>
+                          {r.note || "Geen notitie"}
+                        </td>
+                      </tr>
+                    )}
+                  </React.Fragment>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 }
