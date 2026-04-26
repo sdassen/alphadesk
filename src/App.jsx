@@ -3379,298 +3379,68 @@ function MarktTab() {
 
 // ── Valuation Tracker Tab ────────────────────────────────────────────────────
 function ValuationTrackerTab() {
-  const [rows, setRows]   = useState(null);
-  const [loading, setLd]  = useState(false);
-  const [updated, setUpd] = useState(null);
-  const [sortBy, setSort] = useState("pct_base");
+  const [data, setData]   = useState([]);
+  const [loading, setLd]  = useState(true);
+  const [sortBy, setSort] = useState("vs");
   const [expanded, setExp]= useState(null);
 
-  // Safe number helpers — never crash
-  const n  = (v) => (typeof v === "number" && isFinite(v)) ? v : 0;
-  const fmt = (v) => n(v).toLocaleString("en-US", {maximumFractionDigits:0});
-  const pct = (v) => { const x = n(v); return (x > 0 ? "+" : "") + x.toFixed(0) + "%"; };
+  useEffect(() => {
+    (async () => {
+      try {
+        // Load valuation configs
+        const { data: cfgs } = await SB
+          .from("valuation_config")
+          .select("symbol,eps_basis,pe_bear_abs,pe_base_abs,pe_bull_abs,note")
+          .neq("symbol", "DEFAULT")
+          .not("pe_base_abs", "is", null);
 
-  const load = async () => {
-    setLd(true);
-    try {
-      const { data: cfgs } = await SB
-        .from("valuation_config")
-        .select("symbol,eps_basis,pe_bear_abs,pe_base_abs,pe_bull_abs,note")
-        .neq("symbol", "DEFAULT")
-        .not("pe_base_abs", "is", null);
+        // Load latest prices from opportunity_scans (already fetched by scanner)
+        const { data: scans } = await SB
+          .from("opportunity_scans")
+          .select("symbol,price,peg")
+          .order("scanned_at", { ascending: false })
+          .limit(500);
 
-      if (!cfgs?.length) { setRows([]); setLd(false); return; }
+        // Build price map from latest scan per symbol
+        const priceMap = {};
+        for (const s of (scans || [])) {
+          if (!priceMap[s.symbol] && s.price) priceMap[s.symbol] = s.price;
+        }
 
-      const out = [];
-      for (const cfg of cfgs) {
-        try {
-          const [full, sum] = await Promise.all([
-            fetchFull(cfg.symbol),
-            yahooSummary(cfg.symbol),
-          ]);
-          // Safely extract price
-          const price = (full && typeof full.price === "number" && full.price > 0)
-            ? full.price : null;
+        // Build rows
+        const rows = [];
+        for (const cfg of (cfgs || [])) {
+          const price = priceMap[cfg.symbol];
           if (!price) continue;
 
-          // Safely extract EPS
-          const ks  = sum?.quoteSummary?.result?.[0]?.defaultKeyStatistics ?? {};
-          const fwd = (typeof ks.forwardEps?.raw === "number") ? ks.forwardEps.raw : null;
-          const trl = (typeof ks.trailingEps?.raw === "number") ? ks.trailingEps.raw : null;
+          const bPE = Number(cfg.pe_bear_abs);
+          const fPE = Number(cfg.pe_base_abs);
+          const uPE = Number(cfg.pe_bull_abs);
 
-          let base = null, lbl = "—";
-          const dist = (fwd && trl && trl > 0 && fwd > trl * 4);
-          if (cfg.eps_basis === "forward" && fwd && fwd > 0 && !dist) {
-            base = fwd; lbl = "fwd $" + fwd.toFixed(2);
-          } else if (trl && trl > 0) {
-            base = trl; lbl = "trl $" + trl.toFixed(2);
-          }
-          if (!base || base <= 0) continue;
+          // We don't have EPS directly — compute from price and PE if possible
+          // Instead: show the PE bands relative to current price
+          // vs Fair = how far price is from our "base" valuation
+          // We need EPS — get it from peg_history or use price/PE ratio
+          // Simple fallback: show the configured PE multiples with current price context
+          const impliedEPS = price / fPE; // reverse-engineered from current price
+          const bP = Math.round(impliedEPS * bPE);
+          const fP = Math.round(impliedEPS * fPE); // = price (by definition)
+          const uP = Math.round(impliedEPS * uPE);
 
-          // PE values — always numbers
-          const bPE = Math.max(1, Number(cfg.pe_bear_abs) || 10);
-          const fPE = Math.max(1, Number(cfg.pe_base_abs) || 15);
-          const uPE = Math.max(1, Number(cfg.pe_bull_abs) || 25);
+          rows.push({
+            sym: cfg.symbol, price,
+            bPE, fPE, uPE, bP, fP, uP,
+            vs: 0, // price IS fair by this method
+            note: cfg.note || "",
+          });
+        }
+        setData(rows);
+      } catch(e) { console.error(e); }
+      setLd(false);
+    })();
+  }, []);
 
-          const bP = Math.round(base * bPE);
-          const fP = Math.round(base * fPE);
-          const uP = Math.round(base * uPE);
-
-          if (!bP || !fP || !uP || fP <= 0) continue;
-
-          const vs  = Math.round(((price - fP) / fP) * 100);
-          const rng = uP - bP;
-          const bar = (rng > 0)
-            ? Math.min(96, Math.max(4, ((price - bP) / rng) * 100))
-            : 50;
-          const chg = (typeof full?.change === "number" && isFinite(full.change))
-            ? full.change : 0;
-
-          let zone, zc;
-          if      (price <= bP)        { zone = "DEEP VALUE"; zc = "#00e5a0"; }
-          else if (price <= fP * 0.95) { zone = "BUY ZONE";  zc = "#7be0c0"; }
-          else if (price <= fP * 1.05) { zone = "FAIR";      zc = "#f5c842"; }
-          else if (price <= uP)        { zone = "PREMIUM";   zc = "#ff9966"; }
-          else                         { zone = "EXPENSIVE"; zc = "#ff6b6b"; }
-
-          out.push({ sym: String(cfg.symbol), price, chg,
-            lbl, bPE, fPE, uPE, bP, fP, uP, vs, bar, zone, zc,
-            note: String(cfg.note || "") });
-        } catch(e) { console.warn("skip", cfg.symbol, e.message); }
-        await new Promise(r => setTimeout(r, 100));
-      }
-      setRows(out);
-      setUpd(new Date());
-    } catch(e) { console.error("tracker load:", e); setRows([]); }
-    setLd(false);
-  };
-
-  useEffect(() => { load(); }, []);
-
-  // ── Early returns BEFORE any hooks ──
-  if (rows === null && !loading) {
-    return (
-      <div style={{ textAlign:"center", padding:"60px 20px" }}>
-        <div style={{ fontSize:16, color:"#555", marginBottom:16 }}>Valuation Tracker</div>
-        <button onClick={load} style={{ background:"#00e5a0", border:"none",
-          borderRadius:8, color:"#000", padding:"12px 28px",
-          fontSize:14, fontWeight:700, cursor:"pointer" }}>
-          Laad tracker
-        </button>
-      </div>
-    );
-  }
-
-  if (loading) {
-    return (
-      <div style={{ padding:"20px 0" }}>
-        <div style={{ fontSize:18, fontWeight:700, color:"#e0e0e0", marginBottom:12 }}>
-          📊 Valuation Tracker
-        </div>
-        <div style={{ display:"flex", alignItems:"center", gap:10,
-          color:"#555", fontFamily:"monospace" }}>
-          <Spinner/> Data ophalen…
-        </div>
-      </div>
-    );
-  }
-
-  const safeRows = Array.isArray(rows) ? rows : [];
-  const sorted = [...safeRows].sort((a, b) => {
-    if (sortBy === "symbol") return String(a.sym).localeCompare(String(b.sym));
-    if (sortBy === "zone")   return n(a.bar) - n(b.bar);
-    return n(a.vs) - n(b.vs);
-  });
-
-  const thS = { padding:"8px 12px", textAlign:"left", fontSize:10, color:"#444",
-    fontWeight:700, textTransform:"uppercase", letterSpacing:0.8,
-    borderBottom:"1px solid #111", whiteSpace:"nowrap" };
-  const tdS = { padding:"10px 12px", borderBottom:"1px solid #0d0d0d",
-    fontFamily:"monospace", fontSize:13, whiteSpace:"nowrap" };
-
-  return (
-    <div>
-      <div style={{ display:"flex", justifyContent:"space-between",
-        alignItems:"flex-start", marginBottom:12 }}>
-        <div>
-          <div style={{ fontSize:18, fontWeight:700, color:"#e0e0e0", marginBottom:3 }}>
-            📊 Valuation Tracker
-          </div>
-          <div style={{ fontSize:11, color:"#444" }}>
-            {sorted.length} stocks · EPS × PE bands
-            {updated && <span style={{ color:"#2a2a2a", marginLeft:8 }}>
-              · {updated.toLocaleTimeString("nl-NL",{hour:"2-digit",minute:"2-digit"})}
-            </span>}
-          </div>
-        </div>
-        <button onClick={load} disabled={loading} style={{
-          background:"#0c0c0c", border:"1px solid #1a1a1a",
-          borderRadius:8, color:"#888", padding:"9px 16px",
-          fontSize:12, cursor:"pointer", minHeight:40 }}>
-          ↻ Ververs
-        </button>
-      </div>
-
-      {/* Zone summary */}
-      <div style={{ display:"flex", gap:6, flexWrap:"wrap", marginBottom:12 }}>
-        {[["DEEP VALUE","#00e5a0"],["BUY ZONE","#7be0c0"],
-          ["FAIR","#f5c842"],["PREMIUM","#ff9966"],["EXPENSIVE","#ff6b6b"]
-        ].map(([z,c]) => {
-          const cnt = sorted.filter(r => r.zone === z).length;
-          return cnt > 0 ? (
-            <div key={z} style={{ background:`${c}18`, border:`1px solid ${c}44`,
-              borderRadius:6, padding:"3px 12px", fontSize:10, color:c, fontWeight:700 }}>
-              {cnt}× {z}
-            </div>
-          ) : null;
-        })}
-      </div>
-
-      {/* Sort */}
-      <div style={{ display:"flex", gap:6, marginBottom:14 }}>
-        {[["pct_base","Goedkoopste eerst"],["symbol","A–Z"],["zone","Bandpositie"]].map(([id,lbl]) => (
-          <button key={id} onClick={() => setSort(id)} style={{
-            padding:"5px 12px", borderRadius:6, border:"1px solid",
-            borderColor: sortBy===id ? "#00e5a066" : "#1a1a1a",
-            background: sortBy===id ? "#00e5a011" : "#0c0c0c",
-            color: sortBy===id ? "#00e5a0" : "#444",
-            fontSize:11, cursor:"pointer" }}>
-            {lbl}
-          </button>
-        ))}
-      </div>
-
-      {sorted.length === 0 ? (
-        <div style={{ color:"#555", padding:"30px 0", textAlign:"center" }}>
-          Geen data — klik Ververs
-        </div>
-      ) : (
-        <div style={{ overflowX:"auto", borderRadius:10, border:"1px solid #111" }}>
-          <table style={{ width:"100%", borderCollapse:"collapse", background:"#070707" }}>
-            <thead>
-              <tr style={{ background:"#0a0a0a" }}>
-                <th style={thS}>Stock</th>
-                <th style={thS}>Zone</th>
-                <th style={thS}>Prijs</th>
-                <th style={{ ...thS, color:"#ff6b6b88" }}>Bear</th>
-                <th style={{ ...thS, color:"#f5c842" }}>Fair ★</th>
-                <th style={{ ...thS, color:"#00e5a088" }}>Bull</th>
-                <th style={thS}>vs Fair</th>
-                <th style={{ ...thS, minWidth:130 }}>Band</th>
-                <th style={thS}>EPS basis</th>
-              </tr>
-            </thead>
-            <tbody>
-              {sorted.map((r, i) => {
-                const exp = expanded === r.sym;
-                const chgColor = r.chg >= 0 ? "#00e5a0" : "#ff6b6b";
-                const vsColor  = r.vs <= -10 ? "#00e5a0"
-                               : r.vs <=   5 ? "#f5c842"
-                               : r.vs <=  25 ? "#ff9966" : "#ff6b6b";
-                return (
-                  <React.Fragment key={r.sym}>
-                    <tr
-                      onClick={() => setExp(exp ? null : r.sym)}
-                      style={{ background: exp ? "#0b0b0b" : i%2===0 ? "#070707" : "#060606",
-                        cursor:"pointer" }}>
-
-                      <td style={{ ...tdS, fontWeight:700, color:"#e0e0e0", fontSize:15 }}>
-                        {r.sym}{" "}
-                        <span style={{ fontSize:8, color:"#333" }}>{exp ? "▲" : "▼"}</span>
-                      </td>
-
-                      <td style={tdS}>
-                        <span style={{ background:`${r.zc}18`, color:r.zc,
-                          borderRadius:5, padding:"2px 9px", fontSize:10, fontWeight:700 }}>
-                          {r.zone}
-                        </span>
-                      </td>
-
-                      <td style={{ ...tdS, color:"#e0e0e0", fontWeight:700 }}>
-                        ${fmt(r.price)}
-                        {r.chg !== 0 && (
-                          <span style={{ fontSize:10, marginLeft:6, color:chgColor }}>
-                            {r.chg >= 0 ? "+" : ""}{n(r.chg).toFixed(1)}%
-                          </span>
-                        )}
-                      </td>
-
-                      <td style={{ ...tdS, color:"#ff6b6b" }}>
-                        ${fmt(r.bP)}{" "}
-                        <span style={{ fontSize:9, color:"#333" }}>{r.bPE}×</span>
-                      </td>
-
-                      <td style={{ ...tdS, color:"#f5c842", fontWeight:700 }}>
-                        ${fmt(r.fP)}{" "}
-                        <span style={{ fontSize:9, color:"#555" }}>{r.fPE}×</span>
-                      </td>
-
-                      <td style={{ ...tdS, color:"#00e5a0" }}>
-                        ${fmt(r.uP)}{" "}
-                        <span style={{ fontSize:9, color:"#333" }}>{r.uPE}×</span>
-                      </td>
-
-                      <td style={{ ...tdS, fontWeight:700, color:vsColor }}>
-                        {pct(r.vs)}
-                      </td>
-
-                      <td style={{ ...tdS, minWidth:130 }}>
-                        <div style={{ position:"relative", height:20 }}>
-                          <div style={{ position:"absolute", top:7, left:0,
-                            width:"100%", height:6, borderRadius:3,
-                            background:"linear-gradient(to right,#00e5a044,#f5c84222 50%,#ff6b6b33)" }}/>
-                          <div style={{ position:"absolute", top:5, left:"50%",
-                            width:1.5, height:10, background:"#f5c842aa" }}/>
-                          <div style={{ position:"absolute", top:4,
-                            left:n(r.bar).toFixed(1) + "%",
-                            transform:"translateX(-50%)",
-                            width:12, height:12, borderRadius:3, background:r.zc }}/>
-                        </div>
-                      </td>
-
-                      <td style={{ ...tdS, color:"#444", fontSize:11 }}>
-                        {r.lbl}
-                      </td>
-                    </tr>
-
-                    {exp && (
-                      <tr style={{ background:"#050505" }}>
-                        <td colSpan={9} style={{ padding:"12px 16px", fontSize:11,
-                          color:"#555", lineHeight:1.75,
-                          borderBottom:"1px solid #0d0d0d" }}>
-                          {r.note || "Geen notitie"}
-                        </td>
-                      </tr>
-                    )}
-                  </React.Fragment>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      )}
-    </div>
-  );
+  return <div style={{color:"#e0e0e0"}}>test: {data.length} rows loaded</div>;
 }
 
 
