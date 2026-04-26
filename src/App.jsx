@@ -3380,87 +3380,70 @@ function MarktTab() {
 // ── Valuation Tracker Tab ────────────────────────────────────────────────────
 function ValuationTrackerTab() {
   const [rows, setRows]   = useState([]);
-  const [done, setDone]   = useState(false);
+  const [loading, setLd]  = useState(true);
+  const [updated, setUpd] = useState(null);
   const [sortBy, setSort] = useState("vs");
   const [expanded, setExp]= useState(null);
 
-  useEffect(() => {
-    (async () => {
-      try {
-        // 1. Load configs
-        const { data: cfgs } = await SB
-          .from("valuation_config")
-          .select("symbol,eps_basis,pe_bear_abs,pe_base_abs,pe_bull_abs,note")
-          .neq("symbol", "DEFAULT")
-          .not("pe_base_abs", "is", null);
-        if (!cfgs?.length) { setDone(true); return; }
+  const load = async () => {
+    setLd(true); setRows([]);
+    try {
+      const { data: cfgs } = await SB
+        .from("valuation_config")
+        .select("symbol,eps_basis,pe_bear_abs,pe_base_abs,pe_bull_abs,note")
+        .neq("symbol", "DEFAULT")
+        .not("pe_base_abs", "is", null);
+      if (!cfgs?.length) { setLd(false); return; }
 
-        // 2. Fetch price + EPS for each stock
-        const out = [];
-        for (const cfg of cfgs) {
-          try {
-            // fetchQuote gets price from chart API (proven stable)
-            const q = await fetchQuote(cfg.symbol);
-            if (!q || !q.price) continue;
+      const out = [];
+      for (const cfg of cfgs) {
+        try {
+          const [q, s] = await Promise.all([
+            fetchQuote(cfg.symbol),
+            yahooSummary(cfg.symbol),
+          ]);
+          if (!q?.price) continue;
+          const px  = q.price;
+          const chg = typeof q.change === "number" ? q.change : 0;
+          const ks  = s?.quoteSummary?.result?.[0]?.defaultKeyStatistics ?? {};
+          const fwd = typeof ks.forwardEps?.raw  === "number" ? ks.forwardEps.raw  : null;
+          const trl = typeof ks.trailingEps?.raw === "number" ? ks.trailingEps.raw : null;
+          const dist = fwd && trl && trl > 0 && fwd > trl * 4;
+          let eps = null, epsLbl = "—";
+          if (cfg.eps_basis === "forward" && fwd && fwd > 0 && !dist) {
+            eps = fwd; epsLbl = "fwd $" + fwd.toFixed(2);
+          } else if (trl && trl > 0) {
+            eps = trl; epsLbl = "trl $" + trl.toFixed(2);
+          }
+          if (!eps) continue;
+          const bPE = Number(cfg.pe_bear_abs);
+          const fPE = Number(cfg.pe_base_abs);
+          const uPE = Number(cfg.pe_bull_abs);
+          const bP  = Math.round(eps * bPE);
+          const fP  = Math.round(eps * fPE);
+          const uP  = Math.round(eps * uPE);
+          const vs  = fP > 0 ? Math.round(((px - fP) / fP) * 100) : 0;
+          const rng = uP - bP;
+          const bar = rng > 0 ? Math.min(96, Math.max(4, ((px - bP) / rng) * 100)) : 50;
+          let zone, zc;
+          if      (px <= bP)        { zone="DEEP VALUE"; zc="#00e5a0"; }
+          else if (px <= fP * 0.95) { zone="BUY ZONE";  zc="#7be0c0"; }
+          else if (px <= fP * 1.05) { zone="FAIR";      zc="#f5c842"; }
+          else if (px <= uP)        { zone="PREMIUM";   zc="#ff9966"; }
+          else                      { zone="EXPENSIVE"; zc="#ff6b6b"; }
+          out.push({ sym:cfg.symbol, px, chg, eps, epsLbl,
+            bPE, fPE, uPE, bP, fP, uP, vs, bar, zone, zc,
+            note: cfg.note || "" });
+        } catch(_) {}
+        await new Promise(r => setTimeout(r, 150));
+      }
+      setRows(out);
+      setUpd(new Date());
+    } catch(e) { console.error(e); }
+    setLd(false);
+  };
 
-            // Get EPS via summary
-            const s   = await yahooSummary(cfg.symbol);
-            const ks  = s?.quoteSummary?.result?.[0]?.defaultKeyStatistics ?? {};
-            const fwd = typeof ks.forwardEps?.raw === "number" ? ks.forwardEps.raw : null;
-            const trl = typeof ks.trailingEps?.raw === "number" ? ks.trailingEps.raw : null;
-
-            // Pick EPS per config
-            let eps = null;
-            let epsLbl = "—";
-            const dist = fwd && trl && trl > 0 && fwd > trl * 4;
-            if (cfg.eps_basis === "forward" && fwd && fwd > 0 && !dist) {
-              eps = fwd; epsLbl = "fwd $" + fwd.toFixed(2);
-            } else if (trl && trl > 0) {
-              eps = trl; epsLbl = "trl $" + trl.toFixed(2);
-            }
-            if (!eps || eps <= 0) continue;
-
-            const bPE = Number(cfg.pe_bear_abs);
-            const fPE = Number(cfg.pe_base_abs);
-            const uPE = Number(cfg.pe_bull_abs);
-            const bP  = Math.round(eps * bPE);
-            const fP  = Math.round(eps * fPE);
-            const uP  = Math.round(eps * uPE);
-            const px  = q.price;
-            const vs  = fP > 0 ? Math.round(((px - fP) / fP) * 100) : 0;
-            const rng = uP - bP;
-            const bar = rng > 0 ? Math.min(96, Math.max(4, ((px - bP) / rng) * 100)) : 50;
-            const chg = typeof q.change === "number" ? q.change : 0;
-
-            let zone, zc;
-            if      (px <= bP)        { zone = "DEEP VALUE"; zc = "#00e5a0"; }
-            else if (px <= fP * 0.95) { zone = "BUY ZONE";  zc = "#7be0c0"; }
-            else if (px <= fP * 1.05) { zone = "FAIR";      zc = "#f5c842"; }
-            else if (px <= uP)        { zone = "PREMIUM";   zc = "#ff9966"; }
-            else                      { zone = "EXPENSIVE"; zc = "#ff6b6b"; }
-
-            out.push({ sym: cfg.symbol, px, chg, eps, epsLbl,
-              bPE, fPE, uPE, bP, fP, uP, vs, bar, zone, zc,
-              note: cfg.note || "" });
-          } catch(_) {}
-          await new Promise(r => setTimeout(r, 150));
-        }
-        setRows(out);
-      } catch(e) { console.error(e); }
-      setDone(true);
-    })();
-  }, []);
-
-  const reload = () => { setDone(false); setRows([]); };
-
-  if (!done) return (
-    <div style={{padding:20}}>
-      <div style={{fontSize:18, fontWeight:700, color:"#e0e0e0", marginBottom:12}}>📊 Valuation Tracker</div>
-      <div style={{display:"flex", alignItems:"center", gap:10, color:"#555", fontFamily:"monospace"}}>
-        <Spinner/> Prijzen ophalen...
-      </div>
-    </div>
-  );
+  useEffect(() => { load(); }, []);
 
   const sorted = [...rows].sort((a,b) =>
     sortBy === "sym" ? a.sym.localeCompare(b.sym) :
@@ -3475,30 +3458,47 @@ function ValuationTrackerTab() {
 
   return (
     <div>
-      <div style={{display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:12}}>
+      {/* Header */}
+      <div style={{display:"flex", justifyContent:"space-between",
+        alignItems:"flex-start", marginBottom:12}}>
         <div>
-          <div style={{fontSize:18, fontWeight:700, color:"#e0e0e0", marginBottom:3}}>📊 Valuation Tracker</div>
-          <div style={{fontSize:11, color:"#444"}}>{sorted.length} stocks · EPS × PE bands · klik rij voor toelichting</div>
+          <div style={{fontSize:18, fontWeight:700, color:"#e0e0e0", marginBottom:3}}>
+            📊 Valuation Tracker
+          </div>
+          <div style={{fontSize:11, color:"#444"}}>
+            {loading ? "Prijzen ophalen..." : `${sorted.length} stocks · EPS × PE bands`}
+            {updated && !loading && (
+              <span style={{color:"#2a2a2a", marginLeft:8}}>
+                · {updated.toLocaleTimeString("nl-NL",{hour:"2-digit",minute:"2-digit"})}
+              </span>
+            )}
+          </div>
         </div>
-        <button onClick={reload} style={{background:"#0c0c0c", border:"1px solid #1a1a1a",
-          borderRadius:8, color:"#888", padding:"9px 16px", fontSize:12, cursor:"pointer"}}>
-          ↻ Ververs
+        <button onClick={load} disabled={loading} style={{
+          background:"#0c0c0c", border:"1px solid #1a1a1a", borderRadius:8,
+          color: loading ? "#333" : "#888", padding:"9px 16px",
+          fontSize:12, cursor: loading ? "default" : "pointer",
+          display:"flex", alignItems:"center", gap:8, minHeight:40}}>
+          {loading ? <><Spinner size={12}/> Laden…</> : "↻ Ververs"}
         </button>
       </div>
 
       {/* Zone pills */}
-      <div style={{display:"flex", gap:6, flexWrap:"wrap", marginBottom:12}}>
-        {[["DEEP VALUE","#00e5a0"],["BUY ZONE","#7be0c0"],["FAIR","#f5c842"],
-          ["PREMIUM","#ff9966"],["EXPENSIVE","#ff6b6b"]].map(([z,c]) => {
-          const n = rows.filter(r => r.zone === z).length;
-          return n > 0 ? (
-            <div key={z} style={{background:`${c}18`, border:`1px solid ${c}44`,
-              borderRadius:6, padding:"3px 12px", fontSize:10, color:c, fontWeight:700}}>
-              {n}× {z}
-            </div>
-          ) : null;
-        })}
-      </div>
+      {rows.length > 0 && (
+        <div style={{display:"flex", gap:6, flexWrap:"wrap", marginBottom:12}}>
+          {[["DEEP VALUE","#00e5a0"],["BUY ZONE","#7be0c0"],
+            ["FAIR","#f5c842"],["PREMIUM","#ff9966"],["EXPENSIVE","#ff6b6b"]
+          ].map(([z,c]) => {
+            const n = rows.filter(r => r.zone === z).length;
+            return n > 0 ? (
+              <div key={z} style={{background:`${c}18`, border:`1px solid ${c}44`,
+                borderRadius:6, padding:"3px 12px", fontSize:10, color:c, fontWeight:700}}>
+                {n}× {z}
+              </div>
+            ) : null;
+          })}
+        </div>
+      )}
 
       {/* Sort */}
       <div style={{display:"flex", gap:6, marginBottom:14}}>
@@ -3513,9 +3513,15 @@ function ValuationTrackerTab() {
         ))}
       </div>
 
-      {sorted.length === 0 ? (
+      {/* Loading state */}
+      {loading ? (
+        <div style={{display:"flex", alignItems:"center", gap:10,
+          color:"#555", fontFamily:"monospace", padding:"30px 0"}}>
+          <Spinner/> Prijzen ophalen per stock…
+        </div>
+      ) : sorted.length === 0 ? (
         <div style={{color:"#555", padding:"30px 0", textAlign:"center"}}>
-          Geen data — markt mogelijk gesloten. Probeer maandag.
+          Geen data — klik ↻ Ververs
         </div>
       ) : (
         <div style={{overflowX:"auto", borderRadius:10, border:"1px solid #111"}}>
@@ -3536,23 +3542,26 @@ function ValuationTrackerTab() {
             <tbody>
               {sorted.map((r, i) => {
                 const exp = expanded === r.sym;
+                const vsColor = r.vs <= -10 ? "#00e5a0"
+                  : r.vs <= 5 ? "#f5c842"
+                  : r.vs <= 25 ? "#ff9966" : "#ff6b6b";
                 return (
                   <React.Fragment key={r.sym}>
                     <tr onClick={() => setExp(exp ? null : r.sym)}
-                      style={{background: exp ? "#0b0b0b" : i%2===0 ? "#070707" : "#060606",
+                      style={{background: exp ? "#0b0b0b"
+                        : i%2===0 ? "#070707" : "#060606",
                         cursor:"pointer"}}>
-
                       <td style={{...td, fontWeight:700, color:"#e0e0e0", fontSize:15}}>
-                        {r.sym} <span style={{fontSize:8, color:"#333"}}>{exp?"▲":"▼"}</span>
+                        {r.sym}{" "}
+                        <span style={{fontSize:8, color:"#333"}}>{exp ? "▲" : "▼"}</span>
                       </td>
-
                       <td style={td}>
                         <span style={{background:`${r.zc}18`, color:r.zc,
-                          borderRadius:5, padding:"2px 9px", fontSize:10, fontWeight:700}}>
+                          borderRadius:5, padding:"2px 9px",
+                          fontSize:10, fontWeight:700}}>
                           {r.zone}
                         </span>
                       </td>
-
                       <td style={{...td, color:"#e0e0e0", fontWeight:700}}>
                         ${Math.round(r.px).toLocaleString("en-US")}
                         {r.chg !== 0 && (
@@ -3562,24 +3571,21 @@ function ValuationTrackerTab() {
                           </span>
                         )}
                       </td>
-
                       <td style={{...td, color:"#ff6b6b"}}>
-                        ${r.bP.toLocaleString("en-US")} <span style={{fontSize:9,color:"#333"}}>{r.bPE}×</span>
+                        ${r.bP.toLocaleString("en-US")}{" "}
+                        <span style={{fontSize:9, color:"#333"}}>{r.bPE}×</span>
                       </td>
-
                       <td style={{...td, color:"#f5c842", fontWeight:700}}>
-                        ${r.fP.toLocaleString("en-US")} <span style={{fontSize:9,color:"#555"}}>{r.fPE}×</span>
+                        ${r.fP.toLocaleString("en-US")}{" "}
+                        <span style={{fontSize:9, color:"#555"}}>{r.fPE}×</span>
                       </td>
-
                       <td style={{...td, color:"#00e5a0"}}>
-                        ${r.uP.toLocaleString("en-US")} <span style={{fontSize:9,color:"#333"}}>{r.uPE}×</span>
+                        ${r.uP.toLocaleString("en-US")}{" "}
+                        <span style={{fontSize:9, color:"#333"}}>{r.uPE}×</span>
                       </td>
-
-                      <td style={{...td, fontWeight:700,
-                        color: r.vs<=-10?"#00e5a0":r.vs<=5?"#f5c842":r.vs<=25?"#ff9966":"#ff6b6b"}}>
+                      <td style={{...td, fontWeight:700, color:vsColor}}>
                         {r.vs > 0 ? "+" : ""}{r.vs}%
                       </td>
-
                       <td style={{...td, minWidth:130}}>
                         <div style={{position:"relative", height:20}}>
                           <div style={{position:"absolute", top:7, left:0, width:"100%",
@@ -3592,14 +3598,13 @@ function ValuationTrackerTab() {
                             width:12, height:12, borderRadius:3, background:r.zc}}/>
                         </div>
                       </td>
-
                       <td style={{...td, color:"#444", fontSize:11}}>{r.epsLbl}</td>
                     </tr>
-
                     {exp && (
                       <tr style={{background:"#050505"}}>
                         <td colSpan={9} style={{padding:"12px 16px", fontSize:11,
-                          color:"#555", lineHeight:1.75, borderBottom:"1px solid #0d0d0d"}}>
+                          color:"#555", lineHeight:1.75,
+                          borderBottom:"1px solid #0d0d0d"}}>
                           {r.note || "Geen notitie"}
                         </td>
                       </tr>
